@@ -1,0 +1,398 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  api,
+  ApiError,
+  type AdbInfo,
+  type ApplyResponse,
+  type EditOp,
+  type OverviewPayload,
+} from "./api.ts";
+import { useToast } from "../components/ui.tsx";
+
+export type SectionId =
+  | "dashboard"
+  | "stats"
+  | "cards"
+  | "frames"
+  | "styles"
+  | "badges"
+  | "decorations"
+  | "homepass"
+  | "devices"
+  | "core"
+  | "boosters"
+  | "lives"
+  | "cosmetics"
+  | "avatars"
+  | "currencies"
+  | "quests"
+  | "rooms"
+  | "costumes"
+  | "collections"
+  | "events"
+  | "match3"
+  | "items"
+  | "explorer"
+  | "pets"
+  | "freshstart"
+  | "homeclone"
+  | "review";
+
+/** One line in the sidebar activity log. */
+export interface LogEntry {
+  id: number;
+  tone: "ok" | "warn" | "err" | "info";
+  msg: string;
+  detail?: string;
+  at: string;
+}
+
+interface StudioState {
+  loading: boolean;
+  bootError: string | null;
+  overview: OverviewPayload | null;
+  /** Live values for the curated catalogue fields (path -> value). */
+  values: Record<string, unknown>;
+  /** Field edits staged in the browser, keyed by JSON path. */
+  pending: Map<string, number | string | boolean>;
+  /** Result of the most recent apply, for the audit trail. */
+  lastApply: ApplyResponse | null;
+  setPending: (path: string, value: number | string | boolean) => void;
+  clearPending: (path?: string) => void;
+  /** Apply staged edits to the session. Resolves true when every op landed. */
+  applyPending: () => Promise<boolean>;
+  applying: boolean;
+  resetSession: () => Promise<void>;
+  reload: () => Promise<void>;
+  section: SectionId;
+  setSection: (s: SectionId) => void;
+  devices: AdbInfo | null;
+  devicesLoading: boolean;
+  refreshDevices: () => Promise<void>;
+  serial: string | null;
+  setSerial: (s: string | null) => void;
+  /** Which device the ACTIVE session was pulled from (null = local file). */
+  deviceSerial: string | null;
+  setDeviceSerial: (s: string | null) => void;
+  /**
+   * The one button that matters: read the client's live save off the selected
+   * device and make it the session every tab edits.
+   */
+  connect: () => Promise<void>;
+  connecting: boolean;
+  /** Write the session back to the device and relaunch the game. */
+  push: () => Promise<void>;
+  pushing: boolean;
+  /** Activity log, newest first. */
+  log: LogEntry[];
+  pushLog: (tone: LogEntry["tone"], msg: string, detail?: string) => void;
+}
+
+const Ctx = createContext<StudioState | null>(null);
+
+let logSeq = 0;
+
+export function useStudio(): StudioState {
+  const ctx = useContext(Ctx);
+  if (!ctx) throw new Error("useStudio must be used inside <StudioProvider>");
+  return ctx;
+}
+
+export function StudioProvider({ children }: { children: ReactNode }) {
+  const toast = useToast();
+  const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [overview, setOverview] = useState<OverviewPayload | null>(null);
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [pending, setPendingMap] = useState<Map<string, number | string | boolean>>(new Map());
+  const [lastApply, setLastApply] = useState<ApplyResponse | null>(null);
+  const [applying, setApplying] = useState(false);
+  const [section, setSection] = useState<SectionId>("dashboard");
+  const [devices, setDevices] = useState<AdbInfo | null>(null);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [serial, setSerial] = useState<string | null>(null);
+  const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
+  const [connecting, setConnecting] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [log, setLog] = useState<LogEntry[]>([]);
+
+  const pushLog = useCallback((tone: LogEntry["tone"], msg: string, detail?: string) => {
+    setLog((prev) =>
+      [{ id: ++logSeq, tone, msg, detail, at: new Date().toLocaleTimeString("en-GB") }, ...prev].slice(0, 60),
+    );
+  }, []);
+
+  /** Pull the authoritative server state (overview + curated values). */
+  const sync = useCallback(async () => {
+    try {
+      const [ov, vals] = await Promise.all([api.overview(), api.values()]);
+      setOverview(ov);
+      setValues(vals);
+      setBootError(null);
+      return true;
+    } catch (err) {
+      // A 409 simply means no save is loaded yet — that is the normal first
+      // screen, not an error worth alarming the user about.
+      if (err instanceof ApiError && err.status === 409) {
+        setOverview(null);
+        setValues({});
+        setBootError(null);
+      } else {
+        setBootError(err instanceof Error ? err.message : String(err));
+      }
+      return false;
+    }
+  }, []);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const ok = await sync();
+      if (ok) setPendingMap(new Map());
+    } finally {
+      setLoading(false);
+    }
+  }, [sync]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const setPending = useCallback((path: string, value: number | string | boolean) => {
+    setPendingMap((prev) => {
+      const next = new Map(prev);
+      next.set(path, value);
+      return next;
+    });
+  }, []);
+
+  const clearPending = useCallback((path?: string) => {
+    setPendingMap((prev) => {
+      if (!path) return new Map();
+      const next = new Map(prev);
+      next.delete(path);
+      return next;
+    });
+  }, []);
+
+  const applyPending = useCallback(async (): Promise<boolean> => {
+    if (pending.size === 0) return true;
+    setApplying(true);
+    try {
+      const ops: EditOp[] = [...pending].map(([path, value]) => ({ path, value }));
+      const res: ApplyResponse = await api.apply(ops, true);
+      setLastApply(res);
+      if (!res.ok) {
+        toast.err("Edit refused", res.errors.join("\n"));
+        pushLog("err", "Edits refused", res.errors[0]);
+        return false;
+      }
+      setPendingMap(new Map());
+      await sync();
+      const n = res.summary.length;
+      const integrityNote =
+        res.integrity && res.integrity.applied.length > 0
+          ? ` (+${res.integrity.applied.length} integrity string${res.integrity.applied.length === 1 ? "" : "s"})`
+          : "";
+      toast.ok(
+        `${n} field${n === 1 ? "" : "s"} patched${integrityNote}`,
+        `${res.inputBytes.toLocaleString("en-US")} → ${res.outputBytes.toLocaleString("en-US")} bytes`,
+      );
+      pushLog(
+        "ok",
+        `${n} field${n === 1 ? "" : "s"} patched`,
+        res.summary
+          .slice(0, 3)
+          .map((s) => s.label)
+          .join(",") + (res.summary.length > 3 ? ` +${res.summary.length - 3}` : ""),
+      );
+      for (const w of res.warnings) toast.warn("Check this", w);
+      return true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.err("Apply failed", msg);
+      pushLog("err", "Apply failed", msg);
+      return false;
+    } finally {
+      setApplying(false);
+    }
+  }, [pending, sync, toast, pushLog]);
+
+  const resetSession = useCallback(async () => {
+    try {
+      await api.reset();
+      setPendingMap(new Map());
+      await sync();
+      toast.ok("Session reset", "Back to the original container bytes.");
+      pushLog("info", "Session reset", "original container bytes restored");
+    } catch (err) {
+      toast.err("Reset failed", err instanceof Error ? err.message : String(err));
+    }
+  }, [sync, toast, pushLog]);
+
+  const refreshDevices = useCallback(async () => {
+    setDevicesLoading(true);
+    try {
+      const info = await api.devices();
+      setDevices(info);
+      if (info.devices.length > 0 && !serial) setSerial(info.devices[0]!.id);
+    } catch (err) {
+      setDevices({ found: false, path: "", devices: [], message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setDevicesLoading(false);
+    }
+  }, [serial]);
+
+  /**
+   * CONNECT — the one button that matters. Reads the client's live save off the
+   * selected device and makes it the session every tab edits, exactly like the
+   * main IGG tool. No file paths, no manual imports.
+   */
+  const connect = useCallback(async () => {
+    if (!serial) {
+      toast.err("No device", "No emulator or phone detected — start one, then press Connect.");
+      return;
+    }
+    setConnecting(true);
+    try {
+      const res = await api.pull(serial);
+      setDeviceSerial(serial);
+      setPendingMap(new Map());
+      await sync();
+
+      // Identify WHOSE game we just read, so the user can see it is the right one.
+      let who = "";
+      try {
+        const [n, l] = await Promise.all([
+          api.field("Properties.name").catch(() => null),
+          api
+            .field("Properties.LID_Lvl")
+            .catch(() => api.field("Properties.level"))
+            .catch(() => null),
+        ]);
+        const nm = typeof n?.value === "string" && n.value ? n.value : "";
+        const lv = typeof l?.value === "number" ? l.value : null;
+        who = nm ? `${nm}${lv !== null ? ` · level ${lv}` : ""}` : "";
+      } catch {
+        /* the name is a nicety, never a blocker */
+      }
+
+      const fields = res.overview?.meta?.fieldCount;
+      toast.ok(
+        who ? `Connected — ${who}` : "Connected",
+        fields ? `${fields.toLocaleString("en-US")} fields read from ${serial}` : serial,
+      );
+      pushLog("ok", who ? `Connected — ${who}` : "Connected to device", serial);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.err("Connect failed", msg);
+      pushLog("err", "Connect failed", msg);
+    } finally {
+      setConnecting(false);
+    }
+  }, [serial, sync, toast, pushLog]);
+
+  /**
+   * PUSH — write the session back to the device and relaunch the game, so the
+   * client is already open on the new save when the button returns.
+   */
+  const push = useCallback(async () => {
+    if (!serial) {
+      toast.err("No device", "Press Connect first so the tool knows which client to write to.");
+      return;
+    }
+    if (!deviceSerial) {
+      toast.err(
+        "Nothing to push",
+        "Press Connect (or run a clone) first so the tool is holding a save that came from this client.",
+      );
+      return;
+    }
+    setPushing(true);
+    try {
+      // Push the EXACT session the edits were applied to. Without this the
+      // server falls back to its newest session, and a pull/clone/reset run
+      // after the last sync silently rotates that — apply would report
+      // success on one session while the bytes pushed came from another,
+      // losing every staged edit with no error shown anywhere.
+      const res = await api.push(serial, true, overview?.meta.id);
+      if (res.error) throw new Error(res.error);
+      toast.ok("Pushed — game is opening", res.toolBackup ? `auto-backup: ${res.toolBackup}` : serial);
+      pushLog("ok", "Save pushed + game relaunched", res.toolBackup ?? serial);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.err("Push failed", msg);
+      pushLog("err", "Push failed", msg);
+    } finally {
+      setPushing(false);
+    }
+  }, [serial, deviceSerial, overview, toast, pushLog]);
+
+  const value = useMemo<StudioState>(
+    () => ({
+      loading,
+      bootError,
+      overview,
+      values,
+      pending,
+      lastApply,
+      setPending,
+      clearPending,
+      applyPending,
+      applying,
+      resetSession,
+      reload,
+      section,
+      setSection,
+      devices,
+      devicesLoading,
+      refreshDevices,
+      serial,
+      setSerial,
+      deviceSerial,
+      setDeviceSerial,
+      connect,
+      connecting,
+      push,
+      pushing,
+      log,
+      pushLog,
+    }),
+    [
+      loading,
+      bootError,
+      overview,
+      values,
+      pending,
+      lastApply,
+      setPending,
+      clearPending,
+      applyPending,
+      applying,
+      resetSession,
+      reload,
+      section,
+      devices,
+      devicesLoading,
+      refreshDevices,
+      serial,
+      deviceSerial,
+      connect,
+      connecting,
+      push,
+      pushing,
+      log,
+      pushLog,
+    ],
+  );
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}

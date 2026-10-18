@@ -1,0 +1,766 @@
+@import "tailwindcss";
+
+/*
+ * Homescapes VIP Studio — MULTI-TONE LIGHT premium theme.
+ *
+ * Not plain white: a soft ice-blue → warm cream → mint page gradient, with
+ * cards in tinted light tones (cream / ice / mint / peach) so every surface
+ * carries one of 3-4 premium light colors. Deep-navy ink keeps contrast
+ * professional; the Homescapes gold brand drives Save & Push, staged edits
+ * and active states. No purple anywhere.
+ */
+@theme {
+  --color-app: #eef2f9;
+  --color-panel: #f9fbff;
+  --color-panel-2: #f1f5fc;
+  --color-panel-3: #e7edf8;
+  --color-line: #dde5f1;
+  --color-line-2: #c9d4e6;
+
+  --color-ink: #16305c;
+  --color-ink-2: #4f5e7e;
+  --color-ink-3: #8494b0;
+
+  /* Brand: Homescapes gold — fills (buttons/tiles) + dark amber text form. */
+  --color-gold: #f0c76a;
+  --color-gold-2: #8a5f06;
+  --color-gold-dim: #e7d9b6;
+
+  /* Primary accent — deep amber gold for active/hover states. */
+  --color-amber: #d9a13c;
+  --color-navy: #1e3a8a;
+
+  --color-ok: #059669;
+  --color-warn: #d97706;
+  --color-err: #dc2626;
+  --color-info: #0284c7;
+
+  /* The 4 light card tones (combinations live in the widget styles). */
+  --color-tint-cream: #fdf6e6;
+  --color-tint-ice: #eaf3fc;
+  --color-tint-mint: #e9f7f3;
+  --color-tint-peach: #fdf1e7;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-app);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Thin, unobtrusive scrollbars that match the chrome. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-2) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-line-2);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #b3c0d6;
+  background-clip: content-box;
+}
+
+/* Number inputs: no spinners, they read as UI noise in a tool like this. */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+::selection {
+  background: color-mix(in oklab, var(--color-amber) 32%, transparent);
+}
+
+/* ---------------------------------------------------------------- chrome -- */
+
+/* Page material — the 3-tone light blend: ice-blue → cream → mint. */
+.app-bg {
+  background: linear-gradient(150deg, #edf2fb 0%, #f5f3ea 52%, #ecf5f1 100%);
+}
+.app-bg::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 90% 70% at 16% -10%, rgba(217, 161, 60, 0.12), transparent 55%),
+    radial-gradient(ellipse 70% 60% at 96% 2%, rgba(2, 132, 199, 0.09), transparent 52%),
+    radial-gradient(ellipse 60% 50% at 50% 110%, rgba(13, 148, 136, 0.07), transparent 55%);
+}
+
+/* Header logo tile — gold mansion badge. */
+.logo-tile {
+  background: linear-gradient(145deg, #f6d98f 0%, #d9a13c 100%);
+  color: #3b2a00;
+  box-shadow:
+    0 4px 14px rgba(217, 161, 60, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+
+/* Status chip. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--color-line);
+  border-radius: 999px;
+  background: rgba(249, 251, 255, 0.92);
+  padding: 0.22rem 0.62rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(22, 48, 92, 0.06);
+}
+.chip--gold {
+  border-color: rgba(217, 161, 60, 0.5);
+  background: var(--color-tint-cream);
+  color: var(--color-gold-2);
+}
+.chip--violet {
+  /* legacy name: device-connected chip (navy tone) */
+  border-color: rgba(30, 58, 138, 0.32);
+  background: var(--color-tint-ice);
+  color: var(--color-navy);
+}
+.chip--ok {
+  border-color: rgba(5, 150, 105, 0.35);
+  background: var(--color-tint-mint);
+  color: #047857;
+}
+.chip--err {
+  border-color: rgba(220, 38, 38, 0.3);
+  background: #fdeef0;
+  color: #b91c1c;
+}
+.chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in oklab, currentColor 16%, transparent);
+}
+
+/* Feature tabs — premium light tab pill with gold active state. */
+.tab-pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.7rem;
+  background: rgba(249, 251, 255, 0.85);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--color-ink-2);
+  transition: all 0.16s ease;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(22, 48, 92, 0.05);
+}
+.tab-pill:hover {
+  border-color: rgba(217, 161, 60, 0.55);
+  color: var(--color-ink);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(22, 48, 92, 0.08);
+}
+.tab-pill--active {
+  border-color: rgba(217, 161, 60, 0.7);
+  background: linear-gradient(180deg, #fff8e6, #fdeec6);
+  color: #7a5305;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.85),
+    0 6px 16px rgba(217, 161, 60, 0.26);
+}
+.tab-pill__emoji {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+.tab-pill__badge {
+  border-radius: 999px;
+  background: rgba(217, 161, 60, 0.24);
+  color: var(--color-gold-2);
+  padding: 0.02rem 0.34rem;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+/* Sidebar device / action cards. */
+.side-card {
+  border: 1px solid var(--color-line);
+  border-radius: 0.85rem;
+  background: linear-gradient(165deg, #fbfcff, #f0f4fb);
+  box-shadow:
+    0 3px 10px rgba(22, 48, 92, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+/* Activity log rows. */
+.log-row {
+  border: 1px solid var(--color-line);
+  border-radius: 0.65rem;
+  background: #f4f7fc;
+  box-shadow: inset 0 1px 3px rgba(22, 48, 92, 0.05);
+}
+
+/* Gold primary button sheen. */
+.btn-gold-sheen {
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    rgba(255, 255, 255, 0.55) 45%,
+    transparent 70%
+  );
+  background-size: 220% 100%;
+  background-position: 180% 0;
+  transition: background-position 0.6s ease;
+}
+:hover > .btn-gold-sheen,
+.btn-gold-sheen:hover {
+  background-position: -60% 0;
+}
+
+/* ----------------------------------------------------------------- misc -- */
+
+@keyframes hc-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-rise {
+  animation: hc-rise 0.18s ease-out both;
+}
+
+/* ------------------------------------------------------ premium widgets -- */
+
+/* Panel material — tinted ice-blue premium card with a warm gold glint,
+   hairline border, soft elevation, 16px radius. */
+.panel {
+  position: relative;
+  border: 1px solid var(--color-line);
+  border-radius: 16px;
+  background:
+    linear-gradient(145deg, rgba(240, 199, 106, 0.09), transparent 42%),
+    linear-gradient(180deg, #fafcff, #f2f6fc);
+  box-shadow:
+    0 10px 30px rgba(22, 48, 92, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+  padding: 0.875rem 1rem;
+  transition:
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+.panel:hover {
+  border-color: rgba(217, 161, 60, 0.5);
+  box-shadow:
+    0 14px 34px rgba(22, 48, 92, 0.11),
+    inset 0 1px 0 rgba(255, 255, 255, 0.95);
+}
+
+/* Uppercase toned card headers (cyan / amber / gold / navy variants). */
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-info);
+}
+.panel-head--amber {
+  color: var(--color-warn);
+}
+.panel-head--gold {
+  color: var(--color-gold-2);
+}
+.panel-head--violet {
+  color: var(--color-navy);
+}
+.panel-head__right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* Tonal stat card — cycles the light tint families (cream / ice / mint /
+   peach / navy / rose / green): tinted background + matching accent. */
+.stat-card {
+  --stat-accent: var(--color-amber);
+  --stat-tint: var(--color-tint-cream);
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--stat-accent) 32%, var(--color-line));
+  border-radius: 14px;
+  background:
+    linear-gradient(
+      160deg,
+      color-mix(in srgb, var(--stat-tint) 78%, #ffffff),
+      var(--stat-tint)
+    );
+  padding: 0.75rem 0.85rem;
+  box-shadow: 0 5px 16px rgba(22, 48, 92, 0.08);
+  transition: border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+}
+.stat-card:hover {
+  border-color: color-mix(in srgb, var(--stat-accent) 62%, var(--color-line));
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(22, 48, 92, 0.12);
+}
+.stat-card::after {
+  content: "";
+  position: absolute;
+  right: -26px;
+  bottom: -34px;
+  width: 92px;
+  height: 92px;
+  border-radius: 999px;
+  border: 14px solid color-mix(in srgb, var(--stat-accent) 12%, transparent);
+  pointer-events: none;
+}
+/* tone → {accent, tint} pairs drawn from the 4 light families */
+.stat-card[data-tone="1"] { --stat-accent: #b47d16; --stat-tint: #fdf6e6; }
+.stat-card[data-tone="2"] { --stat-accent: #1d63b8; --stat-tint: #eaf3fc; }
+.stat-card[data-tone="3"] { --stat-accent: #0d9488; --stat-tint: #e9f7f3; }
+.stat-card[data-tone="4"] { --stat-accent: #b45309; --stat-tint: #fdf1e7; }
+.stat-card[data-tone="5"] { --stat-accent: #1e40af; --stat-tint: #eaeefb; }
+.stat-card[data-tone="6"] { --stat-accent: #be123c; --stat-tint: #fdeef1; }
+.stat-card[data-tone="7"] { --stat-accent: #047857; --stat-tint: #e9f7f0; }
+
+.stat-title {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: color-mix(in srgb, var(--stat-accent) 88%, #16305c);
+  text-transform: uppercase;
+}
+.stat-emoji {
+  font-size: 1rem;
+  line-height: 1;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--stat-accent) 35%, transparent));
+}
+.stat-value {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--stat-accent) 38%, var(--color-line-2));
+  border-radius: 9px;
+  background: #fdfeff;
+  padding: 0.4rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.stat-value:focus {
+  border-color: var(--stat-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--stat-accent) 22%, transparent);
+}
+
+/* KPI tile: emoji block + big number + label. */
+.kpi-tile {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fafcff, #f1f5fc);
+  padding: 0.7rem 0.85rem;
+  box-shadow: 0 5px 16px rgba(22, 48, 92, 0.08);
+}
+.kpi-emoji {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 12px;
+  background: linear-gradient(145deg, #fdf6e6, #f8e7bd);
+  font-size: 1.25rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+.kpi-num {
+  font-size: 1.15rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  color: var(--color-ink);
+}
+.kpi-label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+}
+
+/* Premium input field family. */
+.field {
+  border: 1px solid var(--color-line-2);
+  border-radius: 9px;
+  background: #fdfeff;
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.4rem 0.55rem;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.field:hover {
+  border-color: rgba(217, 161, 60, 0.6);
+}
+.field:focus {
+  border-color: var(--color-amber);
+  box-shadow: 0 0 0 3px rgba(217, 161, 60, 0.2);
+}
+.field-qty {
+  width: 5.5rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.field-stat {
+  width: 100%;
+}
+.field-shell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.field-shell .field {
+  padding-left: 1.9rem;
+}
+.field-shell__icon {
+  position: absolute;
+  left: 0.55rem;
+  color: var(--color-ink-3);
+  pointer-events: none;
+}
+
+/* Preset pill buttons (1 / 10 / 50 … MAX). */
+.preset-pill {
+  border: 1px solid var(--color-line-2);
+  border-radius: 9px;
+  background: #f4f7fc;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-2);
+  transition: all 0.15s ease;
+}
+.preset-pill:hover {
+  border-color: rgba(217, 161, 60, 0.65);
+  color: var(--color-gold-2);
+  transform: translateY(-1px);
+  background: #fdfeff;
+}
+.preset-pill[aria-pressed="true"] {
+  border-color: rgba(217, 161, 60, 0.75);
+  background: linear-gradient(180deg, #fff8e6, #fdeec6);
+  color: #7a5305;
+  box-shadow: 0 2px 8px rgba(217, 161, 60, 0.28);
+}
+.preset-pill--gold[aria-pressed="true"] {
+  border-color: rgba(217, 161, 60, 0.75);
+  background: linear-gradient(180deg, #fff8e6, #fdeec6);
+  color: #7a5305;
+}
+
+/* Toggle-chip inventory tile (check square + emoji + label). */
+.inv-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.6rem;
+  width: 100%;
+  border: 1px solid var(--color-line);
+  border-radius: 11px;
+  background: #fdfeff;
+  padding: 0.35rem 0.55rem;
+  text-align: left;
+  font-size: 0.78rem;
+  color: var(--color-ink-2);
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 4px rgba(22, 48, 92, 0.06);
+}
+.inv-chip:hover {
+  border-color: rgba(217, 161, 60, 0.6);
+  background: var(--color-tint-cream);
+}
+.inv-chip[aria-pressed="true"] {
+  border-color: rgba(217, 161, 60, 0.75);
+  background: linear-gradient(180deg, #fff9ea, #fdeec6);
+  color: #6b4a04;
+  box-shadow: 0 3px 10px rgba(217, 161, 60, 0.22);
+}
+.inv-chip__check {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  border: 1px solid var(--color-line-2);
+  border-radius: 4px;
+  background: #fff;
+  color: transparent;
+  font-size: 0.6rem;
+  transition: all 0.15s ease;
+}
+.inv-chip[aria-pressed="true"] .inv-chip__check {
+  border-color: transparent;
+  background: var(--color-amber);
+  color: #fff;
+}
+.inv-chip__emoji {
+  font-size: 0.95rem;
+  line-height: 1;
+  width: 1.25rem;
+  text-align: center;
+}
+.inv-chip__label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Premium-row feature card: icon+label left, controls right. */
+.feature-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fbfcff, #f4f7fd);
+  padding: 0.55rem 0.7rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 2px 8px rgba(22, 48, 92, 0.06);
+}
+.feature-row:hover {
+  border-color: rgba(217, 161, 60, 0.55);
+  box-shadow: 0 6px 16px rgba(22, 48, 92, 0.09);
+}
+.feature-row__icon {
+  display: grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #fdf6e6, #f8e7bd);
+  font-size: 1.05rem;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+.feature-row__name {
+  font-size: 0.8rem;
+  font-weight: 650;
+  color: var(--color-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.feature-row__sub {
+  font-size: 0.66rem;
+  color: var(--color-ink-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.feature-row__controls {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+/* State badge pills. */
+.state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid var(--color-line-2);
+  border-radius: 999px;
+  background: var(--color-panel-2);
+  padding: 0.15rem 0.6rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: var(--color-ink-2);
+  white-space: nowrap;
+}
+.state-badge--ready {
+  border-color: rgba(5, 150, 105, 0.4);
+  background: var(--color-tint-mint);
+  color: #047857;
+}
+.state-badge--gold {
+  border-color: rgba(217, 161, 60, 0.55);
+  background: var(--color-tint-cream);
+  color: var(--color-gold-2);
+}
+.state-badge--violet {
+  /* legacy name: navy pill */
+  border-color: rgba(30, 58, 138, 0.35);
+  background: var(--color-tint-ice);
+  color: var(--color-navy);
+}
+.state-badge--cyan {
+  border-color: rgba(2, 132, 199, 0.35);
+  background: var(--color-tint-ice);
+  color: #0369a1;
+}
+.state-badge--warn {
+  border-color: rgba(217, 119, 6, 0.42);
+  background: var(--color-tint-peach);
+  color: #9a5b06;
+}
+
+/* Numbered wizard step card. */
+.step-card {
+  display: flex;
+  gap: 0.8rem;
+  border: 1px solid var(--color-line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #fbfcff, #f4f7fd);
+  padding: 0.85rem 1rem;
+  box-shadow: 0 5px 16px rgba(22, 48, 92, 0.08);
+}
+.step-num {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  background: linear-gradient(145deg, #fdf6e6, #f7d98f);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #6b4a04;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+/* Amber info note / blue info note. */
+.note-amber {
+  border: 1px solid rgba(217, 119, 6, 0.32);
+  border-radius: 10px;
+  background: var(--color-tint-peach);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: #8a5306;
+}
+.note-info {
+  border: 1px solid rgba(2, 132, 199, 0.28);
+  border-radius: 10px;
+  background: var(--color-tint-ice);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.75rem;
+  color: #075985;
+}
+
+/* Mini progress bar. */
+.mini-bar {
+  height: 0.55rem;
+  border-radius: 999px;
+  background: rgba(22, 48, 92, 0.12);
+  overflow: hidden;
+}
+.mini-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--color-amber), #f6d98f);
+  transition: width 0.4s ease;
+}
+.mini-bar__fill--gold {
+  background: linear-gradient(90deg, #d9a13c, #f6d98f);
+}
+
+/* Animations — panel/entry choreography (respect reduced motion). */
+@keyframes hc-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes hc-badge-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .panel-in {
+    animation: hc-panel-in 0.25s ease-out both;
+  }
+  .stagger-in > * {
+    animation: hc-panel-in 0.25s ease-out both;
+  }
+  .stagger-in > *:nth-child(1) { animation-delay: 0ms; }
+  .stagger-in > *:nth-child(2) { animation-delay: 40ms; }
+  .stagger-in > *:nth-child(3) { animation-delay: 80ms; }
+  .stagger-in > *:nth-child(4) { animation-delay: 120ms; }
+  .stagger-in > *:nth-child(5) { animation-delay: 160ms; }
+  .stagger-in > *:nth-child(6) { animation-delay: 200ms; }
+  .stagger-in > *:nth-child(7) { animation-delay: 240ms; }
+  .stagger-in > *:nth-child(8) { animation-delay: 280ms; }
+  .stagger-in > *:nth-child(9) { animation-delay: 320ms; }
+  .stagger-in > *:nth-child(10) { animation-delay: 360ms; }
+  .stagger-in > *:nth-child(11) { animation-delay: 400ms; }
+  .stagger-in > *:nth-child(n + 12) { animation-delay: 440ms; }
+  .badge-pop {
+    animation: hc-badge-pop 0.5s ease-out both;
+  }
+}

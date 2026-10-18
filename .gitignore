@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Local save fixtures & device state (never commit game saves)
+decoded/*.db
+*.hcsbak
+cycle-state.json

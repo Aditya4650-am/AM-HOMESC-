@@ -1,0 +1,2002 @@
+/* ==========================================================================
+   AM TECH Homescapes Tool — recreated from the 1536×1024 reference screenshot.
+   Palette and metrics measured from the reference pixels.
+   ========================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+.am-desktop {
+  display: contents;
+}
+
+/* Window "desktop" backdrop — only when the window is not maximized. */
+.am-desktop--on {
+  display: flex;
+  align-items: stretch;
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(160deg, #d9e4f5 0%, #edf2fb 100%);
+  padding: 32px;
+}
+
+.am-root {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #f1f7fe;
+  color: #33415c;
+  font-family: "Segoe UI", "Segoe UI Variable", system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+}
+
+/* Windowed (restored) state: the app sits as a framed window on the desktop. */
+.am-desktop--on .am-root {
+  height: auto;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid #c6d4ec;
+  border-radius: 14px;
+  box-shadow: 0 26px 70px rgba(20, 40, 90, 0.28);
+}
+
+/* ------------------------------------------------------------- title bar -- */
+
+.am-titlebar {
+  position: relative;
+  flex: 0 0 108px;
+  background: #fdfdfd;
+  border-bottom: 1px solid #f6f9fd;
+  display: flex;
+  align-items: center;
+  padding-left: 28px;
+  user-select: none;
+}
+
+.am-tb-icon {
+  width: 70px;
+  height: 70px;
+  object-fit: contain;
+  flex: 0 0 70px;
+}
+
+.am-tb-text {
+  margin-left: 13px;
+}
+
+.am-tb-name {
+  font-size: 25px;
+  font-weight: 700;
+  color: #0a2570;
+  line-height: 1.2;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
+.am-tb-name .am-accent {
+  color: #0a62f6;
+}
+
+.am-tb-sub {
+  margin-top: 4px;
+  font-size: 20px;
+  font-weight: 400;
+  color: #4c619b;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------- window controls ----- */
+
+.am-winctl {
+  position: absolute;
+  top: 16px;
+  right: 1px;
+  width: 165px;
+  height: 48px;
+}
+
+.am-winctl img {
+  display: block;
+  width: 165px;
+  height: 48px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.am-winctl-btn {
+  position: absolute;
+  top: 4px;
+  height: 40px;
+  width: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.am-winctl-btn:hover {
+  background: rgba(120, 140, 180, 0.16);
+}
+
+.am-winctl-btn:active {
+  background: rgba(120, 140, 180, 0.28);
+}
+
+.am-winctl-btn--min {
+  left: 4px;
+}
+
+.am-winctl-btn--max {
+  left: 53px;
+}
+
+.am-winctl-btn--close {
+  left: 117px;
+}
+
+.am-winctl-btn--close:hover {
+  background: rgba(224, 60, 60, 0.14);
+}
+
+/* --------------------------------------------- minimized / closed states -- */
+
+.am-taskbar {
+  position: fixed;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 56px;
+  padding: 0 12px 0 16px;
+  border-radius: 14px;
+  background: #ffffff;
+  border: 1px solid #c6d4ec;
+  box-shadow: 0 18px 44px rgba(20, 40, 90, 0.26);
+  z-index: 70;
+}
+
+.am-taskbar img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.am-taskbar span {
+  font-size: 15px;
+  font-weight: 600;
+  color: #16376b;
+  white-space: nowrap;
+}
+
+.am-winpanel {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: linear-gradient(160deg, #d9e4f5 0%, #edf2fb 100%);
+  z-index: 70;
+  text-align: center;
+  padding: 24px;
+}
+
+.am-winpanel img {
+  width: 85px;
+  height: 85px;
+  object-fit: contain;
+}
+
+.am-winpanel-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #0a2570;
+}
+
+.am-winpanel-detail {
+  font-size: 14.5px;
+  color: #4c619b;
+}
+
+/* ------------------------------------------------------ chip + gear -------- */
+
+.am-tb-right {
+  position: absolute;
+  top: 64px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 39px;
+}
+
+/* Toolbar: device picker · rescan · status chip · Connect · Push & Launch. */
+.am-tb-right--tools {
+  gap: 10px;
+}
+
+.am-select--device {
+  height: 36px;
+  min-width: 170px;
+  max-width: 220px;
+  font-size: 13.5px;
+  border-radius: 10px;
+}
+
+.am-ghost--icon {
+  padding: 0 11px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.am-chip--static {
+  cursor: default;
+}
+
+.am-chip--static:hover {
+  background: #f4fdf9;
+  border-color: #dceee8;
+}
+
+.am-chip--static.am-chip--off:hover {
+  background: #fef5f5;
+  border-color: #f8dede;
+}
+
+.am-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: #f4fdf9;
+  border: 1px solid #dceee8;
+  font-size: 14.5px;
+  font-family: inherit;
+  font-weight: 600;
+  color: #0dad50;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.am-chip:hover {
+  border-color: #bfe6d8;
+  background: #effbf6;
+}
+
+.am-chip .am-chip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #16c060;
+  box-shadow: 0 0 0 3px rgba(22, 192, 96, 0.16);
+}
+
+.am-chip--off {
+  background: #fef5f5;
+  border-color: #f8dede;
+  color: #dc4d4d;
+}
+
+.am-chip--off:hover {
+  background: #fdeeee;
+  border-color: #f3caca;
+}
+
+.am-chip--off .am-chip-dot {
+  background: #e06060;
+  box-shadow: 0 0 0 3px rgba(224, 96, 96, 0.14);
+}
+
+.am-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 62px;
+  height: 35px;
+  border: 1px solid #e6edf8;
+  border-radius: 10px;
+  background: #f5f9fe;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.am-gear:hover {
+  background: #eaf2fd;
+  border-color: #d5e2f5;
+}
+
+.am-gear img {
+  width: auto;
+  height: 41px;
+  object-fit: contain;
+  position: relative;
+  left: -8px;
+}
+
+/* ---------------------------------------------------------- body / shell -- */
+
+.am-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.am-sidebar {
+  flex: 0 0 297px;
+  width: 297px;
+  display: flex;
+  flex-direction: column;
+  background: #f8fbfe;
+  padding: 18px 15px 25px 16px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.am-logo {
+  width: 240px;
+  height: 98px;
+  object-fit: contain;
+  margin: 0 0 0 14px;
+  align-self: flex-start;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.am-logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.am-nav {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.am-nav--lower {
+  margin-top: 9px;
+  gap: 6px;
+}
+
+.am-sep {
+  flex: 0 0 auto;
+  height: 1px;
+  background: #dfe8f7;
+  margin: 3px 10px 0 21px;
+}
+
+.am-item {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 7px;
+  width: calc(100% - 10px);
+  height: 58px;
+  padding-left: 16px;
+  margin-left: 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 19.5px;
+  font-weight: 600;
+  color: #344f8c;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.am-nav--lower .am-item {
+  height: 48px;
+  font-size: 17px;
+  font-weight: 500;
+  color: #42598e;
+}
+
+.am-item-icon {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.am-item-icon img {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+
+.am-item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-item:hover {
+  background: #eef4fd;
+}
+
+.am-item--active {
+  background: #e1eefd;
+  color: #0b5af8;
+}
+
+.am-nav--lower .am-item--active {
+  background: #e1eefd;
+  color: #0b5af8;
+  font-weight: 600;
+}
+
+.am-art {
+  align-self: flex-start;
+  width: 218px;
+  height: 236px;
+  object-fit: contain;
+  flex: 0 0 auto;
+  margin: 12px 0 0 4px;
+}
+
+/* ----------------------------------------------------------------- main -- */
+
+.am-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 36px 28px 29px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.am-banner {
+  display: block;
+  width: calc(100% + 9px);
+  max-width: none;
+  height: auto;
+  margin-left: -4px;
+  flex: 0 0 auto;
+}
+
+.am-pills {
+  display: flex;
+  gap: 13px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.am-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 23px;
+  height: 61px;
+  padding: 0;
+  min-width: var(--pw, 0px);
+  border: 1px solid #dce7f6;
+  border-radius: 14px;
+  background: #f7fbfe;
+  color: #37548f;
+  font-family: inherit;
+  font-size: 20.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.am-pill img {
+  width: auto;
+  height: 40px;
+  object-fit: contain;
+}
+
+.am-pill:hover {
+  border-color: #bcd2f2;
+  background: #f2f8ff;
+}
+
+.am-pill--active {
+  background: #2577fd;
+  border-color: #2577fd;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(37, 119, 253, 0.24);
+}
+
+.am-pill--active img {
+  filter: brightness(0) invert(1);
+}
+
+.am-pill--active:hover {
+  background: #2577fd;
+  border-color: #2577fd;
+}
+
+/* --------------------------------------------------------------- panels -- */
+
+.am-content {
+  margin-top: 23px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.am-panel {
+  background: #f9fbfd;
+  border: 1px solid #e7eefa;
+  border-radius: 18px;
+  padding: 16px 29px 32px;
+  box-shadow: 0 1px 3px rgba(15, 30, 66, 0.06);
+}
+
+.am-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-bottom: 17px;
+}
+
+.am-panel-head img {
+  width: auto;
+  height: 68px;
+  object-fit: contain;
+  margin-left: -4px;
+  flex: 0 0 auto;
+}
+
+.am-panel-title {
+  font-size: 29px;
+  font-weight: 700;
+  color: #041d64;
+  letter-spacing: 0.2px;
+}
+
+.am-hint {
+  font-size: 13.5px;
+  color: #7c8ca6;
+}
+
+.am-section-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.am-section-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0b2572;
+}
+
+.am-section-sub {
+  font-size: 14px;
+  color: #64748b;
+  margin-top: 3px;
+}
+
+.am-panel-div {
+  height: 1px;
+  background: #dfe8f7;
+  margin: 39px 0 0;
+}
+
+/* --------------------------------------------------------- dashboard ----- */
+
+/* Twelve editable stat cards — the main IGG tool's Data Center layout:
+   icon + label + one type-in input per stat, no steppers, no checkboxes. */
+.am-statgrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 640px) {
+  .am-statgrid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (min-width: 1024px) {
+  .am-statgrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Wide windows: five columns keep all fifteen cards + Save/Push on screen. */
+@media (min-width: 1400px) {
+  .am-statgrid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
+.am-scard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1.5px solid #e3eaf5;
+  background: #ffffff;
+  min-width: 0;
+}
+
+.am-scard--coin {
+  background: linear-gradient(180deg, #fdfcf6 0%, #fefdf7 100%);
+  border-color: #fddd9f;
+}
+
+.am-scard--star {
+  background: linear-gradient(180deg, #f5f7ff 0%, #f6f7fe 100%);
+  border-color: #c3c8fb;
+}
+
+.am-scard-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.am-scard-icon {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  object-fit: contain;
+  border-radius: 9px;
+  background: #f2f6fd;
+}
+
+.am-scard-emoji {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  border-radius: 9px;
+  background: #f2f6fd;
+}
+
+.am-scard-label {
+  font-size: 17px;
+  font-weight: 600;
+  color: #16376b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-scard-head .am-staged {
+  margin-left: auto;
+}
+
+.am-scard-input {
+  height: 40px;
+  width: 100%;
+  padding: 0 12px;
+  border: 1.5px solid #e0e7f2;
+  border-radius: 11px;
+  background: #ffffff;
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  color: #0a2570;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-scard-input:focus {
+  outline: none;
+  border-color: #0862fa;
+  box-shadow: 0 0 0 3px rgba(8, 98, 250, 0.14);
+}
+
+/* Absent leaves (fresh clients) and computed displays are not editable. */
+.am-scard-input:disabled {
+  background: #f4f7fc;
+  border-color: #e8edf6;
+  color: #9aa8c0;
+  cursor: not-allowed;
+}
+
+.am-statrow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 30px;
+}
+
+.am-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  padding: 16px 23px 0 26px;
+  min-height: 210px;
+  min-width: 0;
+}
+
+.am-card--coin {
+  background: linear-gradient(180deg, #fdfcf6 0%, #fefdf7 100%);
+  border: 1.5px solid #fddd9f;
+}
+
+.am-card--star {
+  background: linear-gradient(180deg, #f5f7ff 0%, #f6f7fe 100%);
+  border: 1.5px solid #c3c8fb;
+}
+
+.am-card-top {
+  display: flex;
+  align-items: center;
+  gap: 27px;
+}
+
+.am-card-tile {
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  flex: 0 0 auto;
+  margin: -2px 0 0 -8px;
+}
+
+.am-card-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+.am-card-label {
+  font-size: 25px;
+  font-weight: 600;
+  color: #16376b;
+}
+
+.am-card-value {
+  margin-top: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 30px;
+  font-weight: 700;
+  color: #0a2570;
+  letter-spacing: 0.4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-steps {
+  display: flex;
+  gap: 17px;
+  flex: 0 0 auto;
+}
+
+/* Reference measures the steppers as buttons only — no light-blue track,
+   just the vertical offset that puts them on the value's baseline row. */
+.am-card .am-steps {
+  margin-top: 8px;
+}
+
+.am-step {
+  width: 55px;
+  height: 45px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid #dde6ef;
+  border-radius: 11px;
+  background: #ffffff;
+  color: #425c8f;
+  font-family: inherit;
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.12s ease, background 0.12s ease, transform 0.05s ease;
+}
+
+.am-step:hover {
+  border-color: #b9cdf3;
+  background: #f7faff;
+}
+
+.am-step:active {
+  transform: scale(0.94);
+}
+
+.am-step:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.am-card-div {
+  margin-top: 15px;
+  height: 1px;
+}
+
+.am-card--coin .am-card-div {
+  background: #f6edd6;
+}
+
+.am-card--star .am-card-div {
+  background: #ecebfb;
+}
+
+.am-checkrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 17px 0 23px;
+}
+
+.am-checkrow-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 13px;
+  font-size: 20px;
+  font-weight: 500;
+  color: #33415c;
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------------- checks -- */
+
+.am-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1.5px solid #c9d3e2;
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 auto;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.am-check:hover {
+  border-color: #93a7c4;
+}
+
+.am-check--on {
+  background: #0862fa;
+  border-color: #0862fa;
+}
+
+.am-check svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* -------------------------------------------------------------- actions -- */
+
+.am-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 33px;
+  margin-top: 21px;
+}
+
+.am-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  height: 77px;
+  border-radius: 14px;
+  font-family: inherit;
+  font-size: 24px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.06s ease, box-shadow 0.15s ease, background 0.15s ease;
+  border: 0;
+}
+
+.am-btn:active {
+  transform: translateY(1px);
+}
+
+.am-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.am-btn img {
+  object-fit: contain;
+}
+
+.am-btn-save {
+  background: #2673f8;
+  color: #ffffff;
+  box-shadow: 0 10px 22px rgba(38, 115, 248, 0.24);
+}
+
+.am-btn-save:hover:not(:disabled) {
+  background: #2266e8;
+}
+
+.am-btn-save img {
+  height: 44px;
+}
+
+.am-btn-push {
+  background: #f9fcff;
+  border: 2px solid #1663fd;
+  color: #1460fc;
+}
+
+.am-btn-push:hover:not(:disabled) {
+  background: #eff5ff;
+}
+
+.am-btn-push img {
+  height: 44px;
+}
+
+/* --------------------------------------------------------- selection UI -- */
+
+.am-checkbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.am-checkbar-count {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #5b6b85;
+  background: #eef4fd;
+  border: 1px solid #e0eaf8;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 15px;
+  border: 1.5px solid #dce7f6;
+  border-radius: 10px;
+  background: #fbfcfe;
+  color: #35507e;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.am-ghost:hover {
+  border-color: #b9cdf3;
+  background: #f4f9fe;
+}
+
+.am-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.am-ghost--primary {
+  background: #0862fa;
+  border-color: #0862fa;
+  color: #ffffff;
+}
+
+.am-ghost--primary:hover {
+  background: #0756da;
+  border-color: #0756da;
+}
+
+/* Equip button on cosmetics rows — one fixed width keeps rows aligned. */
+.am-equip {
+  min-width: 88px;
+  justify-content: center;
+}
+
+/* Cosmetics rows: the item's own art leads the row, the same way the booster
+   rows on the Stats tab do. Icon-less ids (older event items the supplied
+   pack ships no art for) keep an empty tile so every row stays aligned. */
+.am-checkrow--cos {
+  gap: 12px;
+  justify-content: flex-start;
+  padding: 10px 0;
+}
+
+.am-cos-tile {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  object-fit: cover;
+  border-radius: 10px;
+  background: #f2f6fd;
+  border: 1px solid #e2e8f0;
+}
+
+.am-cos-tile--empty {
+  background: #f7fafd;
+}
+
+/* Solid colour tile — for the basic frames whose identity literally IS their
+   colour (blue / orange / red / gold). This is the item's real appearance,
+   not stand-in art. */
+.am-cos-tile--swatch {
+  border-color: rgb(0 0 0 / 12%);
+}
+
+/* Placeholder for ids the client pack ships no art for. The dashed border and
+   muted monogram make it unmistakably a placeholder, so it is never mistaken
+   for the game's own icon. */
+.am-cos-tile--noart {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f7fafd;
+  border: 1px dashed #c2d0e2;
+  color: #94a5bb;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.am-cos-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.am-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(158px, 1fr));
+  gap: 12px;
+}
+
+.am-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 10px 12px;
+  border: 1.5px solid #e3eaf5;
+  border-radius: 14px;
+  background: #fdfeff;
+  cursor: pointer;
+  text-align: center;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.am-tile:hover {
+  border-color: #b9cdf3;
+  background: #f7faff;
+}
+
+.am-tile--on {
+  border-color: #0862fa;
+  background: #f3f8ff;
+  box-shadow: 0 4px 12px rgba(8, 98, 250, 0.12);
+}
+
+.am-tile-art {
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  object-fit: contain;
+  background: #f2f6fd;
+}
+
+.am-tile-emoji {
+  width: 54px;
+  height: 54px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  background: #f2f6fd;
+}
+
+.am-tile-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #33415c;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.am-tile-state {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #8a97ad;
+}
+
+.am-tile--on .am-tile-state {
+  color: #0862fa;
+}
+
+/* ------------------------------------------------------- avatars grid ----- */
+
+.am-grid--ava {
+  grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+  gap: 9px;
+  max-height: 560px;
+  overflow-y: auto;
+  padding: 2px;
+  align-content: start;
+}
+
+.am-ava {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 4px 7px;
+  border: 2px solid #dde5f1;
+  border-radius: 13px;
+  background: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.am-ava:hover {
+  border-color: #9dbdf5;
+  background: #f7faff;
+}
+
+.am-ava img {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  object-fit: cover;
+  display: block;
+  background: #f2f6fd;
+}
+
+.am-ava-emoji {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  background: #f2f6fd;
+}
+
+.am-ava-id {
+  font-size: 11px;
+  font-weight: 700;
+  color: #8093b3;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-ava--on {
+  border-color: #4f8dfb;
+  background: #f4f8ff;
+}
+
+.am-ava--stg {
+  border-color: #e8a014;
+  border-style: dashed;
+  background: #fffaf0;
+}
+
+.am-ava--eq {
+  border-color: #0862fa;
+  background: #0862fa;
+  box-shadow: 0 4px 12px rgba(8, 98, 250, 0.22);
+}
+
+.am-ava--eq .am-ava-id {
+  color: #ffffff;
+}
+
+.am-ava--eq:hover {
+  background: #0756da;
+  border-color: #0756da;
+}
+
+/* ---------------------------------------------------------- cards tab ----- */
+
+/* Owned-card tiles: tick-to-select (the main tool's only selection mechanic). */
+.am-grid--cards {
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 9px;
+}
+
+.am-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 10px 4px 8px;
+  border: 2px solid #dde5f1;
+  border-radius: 12px;
+  background: #ffffff;
+  cursor: pointer;
+  font-family: inherit;
+  transition: border-color 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.am-cell:hover {
+  border-color: #9dbdf5;
+  background: #f7faff;
+}
+
+/* Held by the album: read as a filled slot against the empty grid around it. */
+.am-cell--owned {
+  border-color: #b9d0f7;
+  background: #f2f7ff;
+}
+
+.am-cell--owned:hover {
+  border-color: #6ea1f2;
+  background: #e9f2ff;
+}
+
+.am-cell--owned .am-cell-num {
+  color: #0862fa;
+}
+
+.am-cell--sel {
+  border-color: #0862fa;
+  background: #0862fa;
+  box-shadow: 0 4px 12px rgba(8, 98, 250, 0.22);
+}
+
+.am-cell--sel:hover {
+  background: #0756da;
+  border-color: #0756da;
+}
+
+.am-cell-num {
+  font-size: 17px;
+  font-weight: 800;
+  color: #0a2570;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-cell--sel .am-cell-num {
+  color: #ffffff;
+}
+
+.am-cell-stock {
+  font-size: 11px;
+  font-weight: 700;
+  color: #8093b3;
+}
+
+.am-cell--sel .am-cell-stock {
+  color: #dbe8ff;
+}
+
+/* One set of exactly 10: a tick-the-set header over its ten tiles, with the
+   album's completion bar beside the set id — the group card the whole
+   catalog is broken into. */
+.am-cardset {
+  border: 1px solid #e3eaf5;
+  border-radius: 14px;
+  background: #fbfcff;
+  padding: 11px 13px 13px;
+  margin-bottom: 11px;
+}
+
+.am-cardset-head {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 10px;
+}
+
+.am-cardset-name {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0a2570;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.am-setbar {
+  flex: 1;
+  min-width: 60px;
+  height: 7px;
+  border-radius: 999px;
+  background: #e6edf9;
+  overflow: hidden;
+}
+
+.am-setbar i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #0862fa, #47a3ff);
+  transition: width 0.2s ease;
+}
+
+/* ------------------------------------------------- delivery popup ------- */
+
+.am-modal--cards {
+  width: min(760px, 100%);
+}
+
+.am-tick {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 999px;
+  background: #e6f7ec;
+  color: #12a05a;
+  font-size: 21px;
+  font-weight: 900;
+}
+
+.am-tally {
+  margin: 0 0 14px;
+}
+
+/* The delivered cards, on the same tile grid the album grid uses — so a
+   100-card wave reads exactly like the collection it lands in. */
+.am-tiles {
+  max-height: 44vh;
+  overflow-y: auto;
+  padding: 2px 4px 2px 0;
+  margin-bottom: 14px;
+}
+
+.am-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 9px 4px 8px;
+  border: 2px solid #b9d0f7;
+  border-radius: 12px;
+  background: #f2f7ff;
+  text-align: center;
+}
+
+.am-tile--new {
+  border-color: #7fd6a4;
+  background: #f1fbf5;
+}
+
+.am-tile-num {
+  font-size: 16px;
+  font-weight: 800;
+  color: #0862fa;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-tile--new .am-tile-num {
+  color: #12a05a;
+}
+
+.am-tile-id {
+  font-size: 10px;
+  font-weight: 700;
+  color: #8093b3;
+}
+
+.am-tile-meta {
+  font-size: 11px;
+  font-weight: 700;
+  color: #0a2570;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-tile-flag {
+  margin-top: 3px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e6edf9;
+  color: #64748b;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.am-tile-flag--new {
+  background: #d7f5e4;
+  color: #12a05a;
+}
+
+.am-deliver-note {
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+
+.am-modal-ok {
+  width: 100%;
+}
+
+/* Friend picker (checkbox rows with the save's own player names). */
+.am-friends {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 2px 22px;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 6px 2px;
+}
+
+/* ---------------------------------------------------------- stats page --- */
+
+.am-fieldgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+
+.am-field {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1.5px solid #e3eaf5;
+  border-radius: 14px;
+  background: #fdfeff;
+  min-width: 0;
+}
+
+.am-field-tile {
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
+  object-fit: contain;
+  background: #f2f6fd;
+  flex: 0 0 46px;
+}
+
+.am-field-emoji {
+  width: 46px;
+  height: 46px;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  background: #f2f6fd;
+  flex: 0 0 46px;
+}
+
+.am-field-meta {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Stats rows only: the booster's own artwork sits beside the label/value
+   column instead of above it. Additive so the stacked layout used by the
+   HomePass and FreshStart rows is untouched. */
+.am-field-meta--icon {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.am-field-col {
+  flex: 1;
+  min-width: 0;
+}
+
+.am-field-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-field-value {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.am-field-input {
+  width: 108px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1.5px solid #e0e7f2;
+  border-radius: 9px;
+  background: #ffffff;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  color: #16376b;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-field-input:focus {
+  outline: none;
+  border-color: #0862fa;
+  box-shadow: 0 0 0 3px rgba(8, 98, 250, 0.14);
+}
+
+.am-step--sm {
+  width: 34px;
+  height: 34px;
+  font-size: 18px;
+  border-radius: 9px;
+}
+
+.am-staged {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #b47b06;
+  background: #fef6e0;
+  border: 1px solid #f7e2ae;
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+/* ------------------------------------------------------------ empty ------ */
+
+.am-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  text-align: center;
+  padding: 56px 30px;
+  background: #fbfdff;
+  border: 1px solid #e6eef9;
+  border-radius: 18px;
+}
+
+.am-empty-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0b2572;
+}
+
+.am-empty-detail {
+  font-size: 14.5px;
+  color: #64748b;
+  max-width: 460px;
+  line-height: 1.55;
+}
+
+.am-empty-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* --------------------------------------------------------- settings modal - */
+
+.am-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 30, 66, 0.34);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  padding: 24px;
+}
+
+.am-modal {
+  width: min(720px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: #fbfdff;
+  border: 1px solid #e6eef9;
+  border-radius: 18px;
+  box-shadow: 0 24px 64px rgba(15, 30, 66, 0.24);
+  padding: 24px 26px;
+}
+
+.am-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.am-modal-title {
+  font-size: 21px;
+  font-weight: 700;
+  color: #0b2572;
+  flex: 1;
+}
+
+.am-close {
+  width: 34px;
+  height: 34px;
+  border: 1.5px solid #e0e7f2;
+  border-radius: 10px;
+  background: #fff;
+  color: #64748b;
+  font-size: 17px;
+  cursor: pointer;
+}
+
+.am-close:hover {
+  background: #f4f8fe;
+  color: #33415c;
+}
+
+.am-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.am-row + .am-row {
+  margin-top: 12px;
+}
+
+.am-label {
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #8493ab;
+  margin: 18px 0 8px;
+}
+
+.am-select {
+  height: 40px;
+  padding: 0 12px;
+  border: 1.5px solid #e0e7f2;
+  border-radius: 10px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  color: #33415c;
+  min-width: 220px;
+}
+
+.am-input {
+  height: 40px;
+  padding: 0 12px;
+  border: 1.5px solid #e0e7f2;
+  border-radius: 10px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  color: #33415c;
+  flex: 1;
+  min-width: 200px;
+}
+
+.am-select:focus,
+.am-input:focus {
+  outline: none;
+  border-color: #0862fa;
+  box-shadow: 0 0 0 3px rgba(8, 98, 250, 0.14);
+}
+
+/* Narrow numeric input (avatar range From / To). */
+.am-input--num {
+  flex: 0 0 auto;
+  width: 96px;
+  min-width: 0;
+  text-align: center;
+}
+
+.am-note {
+  font-size: 13.5px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.am-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.am-meta-cell {
+  background: #f4f8fe;
+  border: 1px solid #e6eef9;
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.am-meta-cell b {
+  display: block;
+  font-size: 15.5px;
+  color: #16376b;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-meta-cell span {
+  font-size: 11.5px;
+  color: #7c8ca6;
+}
+
+/* --------------------------------------------------------- activity log -- */
+
+.am-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 184px;
+  overflow-y: auto;
+}
+
+.am-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  color: #475569;
+  padding: 6px 10px;
+  border: 1px solid #e8eef8;
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: #fdfeff;
+}
+
+.am-log-row b {
+  font-weight: 700;
+  color: #16376b;
+}
+
+.am-log-row--ok {
+  border-left-color: #16c060;
+}
+
+.am-log-row--warn {
+  border-left-color: #e8a014;
+}
+
+.am-log-row--err {
+  border-left-color: #e06060;
+}
+
+.am-log-row--info {
+  border-left-color: #2b77f9;
+}
+
+.am-log-at {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: #8a97ad;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------- responsive ------ */
+
+@media (max-width: 1240px) {
+  .am-main {
+    padding: 20px 24px 24px 24px;
+  }
+  .am-statrow {
+    gap: 18px;
+  }
+  .am-actions {
+    gap: 18px;
+  }
+}
+
+@media (max-width: 1060px) {
+  .am-sidebar {
+    flex-basis: 240px;
+    width: 240px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .am-logo {
+    width: 210px;
+    height: 86px;
+    margin-left: 6px;
+  }
+  .am-item {
+    margin-left: 4px;
+    width: calc(100% - 4px);
+    font-size: 14.5px;
+    gap: 8px;
+    padding-left: 10px;
+  }
+  .am-item-icon {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+  }
+  .am-art {
+    width: 210px;
+    height: 226px;
+  }
+  .am-statrow {
+    grid-template-columns: 1fr;
+  }
+  .am-actions {
+    grid-template-columns: 1fr;
+  }
+  .am-card {
+    min-height: 0;
+    padding-bottom: 4px;
+  }
+  .am-pill {
+    height: 52px;
+    min-width: 0;
+    padding: 0 20px;
+    gap: 14px;
+    font-size: 15px;
+  }
+  .am-pill img {
+    height: 32px;
+  }
+  .am-panel-title {
+    font-size: 22px;
+  }
+  .am-panel-head img {
+    height: 54px;
+  }
+}
+
+@media (max-width: 760px) {
+  .am-titlebar {
+    flex-basis: 88px;
+    padding-left: 12px;
+  }
+  .am-tb-icon {
+    width: 54px;
+    height: 54px;
+    flex-basis: 54px;
+  }
+  .am-tb-text {
+    margin-left: 8px;
+  }
+  .am-tb-name {
+    font-size: 16.5px;
+  }
+  .am-tb-sub {
+    font-size: 12.5px;
+  }
+  .am-winctl {
+    display: none;
+  }
+  .am-tb-right {
+    top: 50px;
+    right: 14px;
+    gap: 14px;
+  }
+  .am-chip {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12.5px;
+  }
+  .am-gear {
+    width: 46px;
+    height: 30px;
+  }
+  .am-gear img {
+    height: 34px;
+  }
+  .am-sidebar {
+    flex-basis: 74px;
+    width: 74px;
+    align-items: center;
+    padding: 10px 6px;
+  }
+  .am-logo {
+    width: 58px;
+    height: 58px;
+    object-fit: cover;
+    border-radius: 12px;
+    margin: 0;
+  }
+  .am-item {
+    width: 52px;
+    height: 46px;
+    margin-left: 0;
+    justify-content: center;
+    padding-left: 0;
+  }
+  .am-item-label {
+    display: none;
+  }
+  .am-sep {
+    margin: 3px 8px 0 8px;
+  }
+  .am-nav {
+    margin-top: 14px;
+    gap: 6px;
+  }
+  .am-nav--lower {
+    margin-top: 12px;
+  }
+  .am-art {
+    width: 56px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 12px;
+    margin: 12px 0 0 0;
+  }
+  .am-main {
+    padding: 14px 14px 20px;
+  }
+  .am-pills {
+    gap: 8px;
+    margin-top: 14px;
+  }
+  .am-pill {
+    height: 46px;
+    min-width: 0;
+    padding: 0 12px;
+    gap: 8px;
+    font-size: 13.5px;
+  }
+  .am-pill img {
+    height: 26px;
+  }
+  .am-content {
+    margin-top: 16px;
+  }
+  .am-panel {
+    padding: 12px 14px 20px;
+  }
+  .am-panel-head {
+    margin-bottom: 12px;
+  }
+  .am-panel-head img {
+    height: 44px;
+    margin-left: 0;
+  }
+  .am-panel-title {
+    font-size: 20px;
+  }
+  .am-card-top {
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .am-card-tile {
+    height: 76px;
+    margin: 0;
+  }
+  .am-card-value {
+    font-size: 25px;
+  }
+  .am-actions {
+    gap: 12px;
+    margin-top: 16px;
+  }
+  .am-btn {
+    height: 60px;
+    font-size: 18px;
+    gap: 10px;
+  }
+  .am-btn-save img,
+  .am-btn-push img {
+    height: 34px;
+  }
+}
