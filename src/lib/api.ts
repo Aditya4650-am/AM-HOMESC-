@@ -121,19 +121,7 @@ export interface ApplyResponse {
   overview?: OverviewPayload;
 }
 
-export interface CloneSectionResponse {
-  ok: boolean;
-  source: string;
-  prefix: string;
-  serial: string;
-  fields: number;
-  summary: EditSummary[];
-  warnings: string[];
-  errors: string[];
-  overview?: OverviewPayload;
-}
-
-/** Result of a ban-safe content clone (home, décor, characters — no progress). */
+/** One content root as the clone reported it. */
 export interface CloneContentRoot {
   root: string;
   fields: number;
@@ -141,6 +129,7 @@ export interface CloneContentRoot {
   skipped: number;
 }
 
+/** Result of a content clone (home, décor, characters — no progress). */
 export interface CloneContentResponse {
   ok: boolean;
   source: string;
@@ -155,33 +144,12 @@ export interface CloneContentResponse {
   overview?: OverviewPayload;
 }
 
-/** Result of a ban-guarded full-account clone. */
-export interface CloneFullResponse {
+/** Where the clone feature reads from — always the built-in IGG account. */
+export interface CloneSourceResponse {
   ok: boolean;
-  guarded: boolean;
-  source: string;
-  serial: string;
-  keepProgress: boolean;
-  /** Leaves in the donor's save. */
-  donorFields: number;
-  /** Identity leaves rewritten to this account. */
-  identityOps: number;
-  /** Progression leaves copied back (safe mode). */
-  progressOps: number;
-  /** Impossible (overflowed) donor counters dropped. */
-  sanitized: string[];
-  /** Overflowed (large-negative) donor values clamped to zero. */
-  clamped: string[];
-  clampedCount: number;
-  /** Identity paths the donor holds that could not be rewritten. */
-  unrewritten: string[];
-  /** Identity paths where the donor holds a branch the target has as null. */
-  branchKept: string[];
-  /** Non-empty when the push gate caught an un-rewritten identity field. */
-  identityLeak: string[];
-  errorsTotal: number;
-  errors: string[];
-  overview?: OverviewPayload;
+  path: string;
+  exists: boolean;
+  bytes: number;
 }
 
 export interface CosmeticItem {
@@ -311,21 +279,20 @@ export const api = {
   apply: (ops: EditOp[], refreshIntegrity: boolean, sessionId?: string) =>
     post<ApplyResponse>("/api/apply", { ops, refreshIntegrity, sessionId }),
 
-  /** Transplant a whole save section from a source save into the connected device. */
-  cloneSection: (payload: { path: string; prefix: string; serial: string; limit?: number }) =>
-    post<CloneSectionResponse>("/api/clone-section", payload),
-
   /**
-   * Ban-safe "complete home": transplant the account's *content* roots (home,
-   * décor, characters, garden) while leaving every progression root — level,
-   * balances, statistics, quests, secret values — on the account untouched.
+   * The clone feature: transplant the built-in IGG account's *content* roots
+   * (home, décor, furniture, characters, avatars) onto the connected device
+   * while leaving every progression root — level, balances, statistics,
+   * quests, secret values — on the account untouched.
+   *
+   * `path` is deliberately not sent by the UI: the source is the tool's own
+   * `data/IGG-account.db` and the server resolves it itself.
    */
-  cloneContent: (payload: { path: string; serial: string; roots?: string[] }) =>
+  cloneContent: (payload: { serial: string; path?: string; roots?: string[] }) =>
     post<CloneContentResponse>("/api/clone-content", payload),
 
-  /** Ban-guarded full-account clone: takes the friend's content, keeps our identity. */
-  cloneFull: (payload: { path: string; serial: string; keepProgress?: boolean }) =>
-    post<CloneFullResponse>("/api/clone-full", payload),
+  /** Reports the built-in clone source (path + whether the file is present). */
+  cloneSource: () => request<CloneSourceResponse>("/api/clone/source"),
 
   cosmeticsCatalog: () =>
     request<{ ok: boolean; groups: CosmeticGroupInfo[] }>("/api/cosmetics/catalog").then(

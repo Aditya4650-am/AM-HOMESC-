@@ -58,7 +58,7 @@ const NAV_LOWER: NavDef[] = [
   { id: "decorations", label: "Decorations", icon: "assets/ui/nav-decor.png" },
   { id: "homepass", label: "Home Pass", icon: "assets/ui/nav-homepass.png" },
   { id: "freshstart", label: "Fresh Start", icon: "assets/ui/nav-stats.png" },
-  { id: "homeclone", label: "Home Clone", icon: "assets/ui/nav-home.png" },
+  { id: "homeclone", label: "IGG Account", icon: "assets/ui/nav-home.png" },
   { id: "pets", label: "Pets", icon: "assets/ui/nav-badges.png" },
 ];
 

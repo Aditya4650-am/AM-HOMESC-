@@ -43,15 +43,21 @@ import {
 import {
   CONTENT_ROOTS,
   assertContentRoots,
-  identityDiff,
-  planIdentityOps,
-  snapshotIdentity,
 } from "./cloneGuard.ts";
 
 const execFileAsync = promisify(execFile);
 
 const ROOT = resolvePath(fileURLToPath(new URL("../../", import.meta.url)));
 const DIST = join(ROOT, "dist");
+/**
+ * The one account the clone feature reads, shipped with the tool.
+ *
+ * `path` is optional on `/api/clone-content` precisely so the client cannot
+ * send some other file: the source of a clone is this save and nothing else.
+ * Resolved against ROOT rather than the working directory so the built-in
+ * account is found no matter where the server was started from.
+ */
+const IGG_SOURCE = join(ROOT, "data", "IGG-account.db");
 const PYTHON = process.env.HC_PYTHON ?? "python";
 const CLIENT = join(ROOT, "client", "hc_client.py");
 const PORT = Number(process.env.HC_PORT ?? 8787);
@@ -296,62 +302,6 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
 
-  /* ---------------------------------------------------- clone-section --
-   * The "friend home" primitive: lift every field under `prefix` from a
-   * SOURCE save (a friend's export / a saved backup) and transplant it
-   * into the LIVE account on the connected device.
-   *
-   * Same flow the furnished-home clone was proven with end to end: read
-   * the source section, re-pull the device so the target is authoritative,
-   * then apply the whole section shallow-first. Nothing is pushed here —
-   * the transplanted save stays staged until the operator presses Push,
-   * which writes the usual `.hcsbak` backup first.
-   */
-  if (route === "POST /api/clone-section") {
-    const body = await readJson<{
-      path: string;
-      prefix: string;
-      serial: string;
-      limit?: number;
-    }>(req);
-    if (!body.path || !body.prefix || !body.serial) {
-      throw new SessionError("`path`, `prefix` and `serial` are required", 400);
-    }
-
-    const srcBytes = new Uint8Array(await readFile(resolvePath(body.path)));
-    const source = createSession("clone-source", srcBytes);
-    const fields = source.discover(body.prefix, body.limit ?? 20000, "");
-    if (fields.length === 0) {
-      throw new SessionError(`no fields under ${body.prefix} in the source save`, 400);
-    }
-
-    const reply = await callBridge(["pull", "--serial", body.serial]);
-    if (!(reply.ok && reply.b64)) {
-      sendJson(res, 400, reply);
-      return;
-    }
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64));
-
-    // Shallow paths first so every parent object exists before its leaves.
-    const ops: EditOp[] = fields
-      .map((f) => ({ path: f.path, value: f.value as EditOp["value"] }))
-      .sort((a, b) => (a.path.match(/\./g)?.length ?? 0) - (b.path.match(/\./g)?.length ?? 0));
-    const result = target.apply(ops, { refreshIntegrity: true });
-
-    sendJson(res, result.ok ? 200 : 400, {
-      ok: result.ok,
-      source: body.path,
-      prefix: body.prefix,
-      serial: body.serial,
-      fields: fields.length,
-      summary: result.summary,
-      warnings: result.warnings,
-      errors: result.errors,
-      overview: result.ok ? target.overview() : undefined,
-    });
-    return;
-  }
-
   /* -------------------------------------------------- clone-content --
    * The "complete home" primitive, and the only clone that survives the
    * server's anti-cheat.
@@ -365,18 +315,32 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
    * So this route copies a whitelist of content roots from the source save
    * onto the live account and refuses any progression root outright. The
    * account keeps its own level, balances, statistics, quests, events and
-   * secret values; it gains the friend's house. Nothing is pushed here — the
+   * secret values; it gains the donor's house. Nothing is pushed here — the
    * result stays staged until the operator presses Push.
+   *
+   * The source is the built-in IGG account (`data/IGG-account.db`). `path` is
+   * accepted but ignored unless it is omitted — it stays optional only so an
+   * offline proof can point at a fixture file; the shipped UI never sends it.
    */
   if (route === "POST /api/clone-content") {
     const body = await readJson<{
-      path: string;
+      path?: string;
       serial: string;
       roots?: string[];
       limit?: number;
     }>(req);
-    if (!body.path || !body.serial) {
-      throw new SessionError("`path` and `serial` are required", 400);
+    if (!body.serial) {
+      throw new SessionError("`serial` is required", 400);
+    }
+    const srcPath = body.path ? resolvePath(body.path) : IGG_SOURCE;
+    let srcBytes: Uint8Array;
+    try {
+      srcBytes = new Uint8Array(await readFile(srcPath));
+    } catch {
+      throw new SessionError(
+        `the built-in clone account is missing: ${srcPath}`,
+        400,
+      );
     }
     const roots = body.roots && body.roots.length ? body.roots : [...CONTENT_ROOTS];
     try {
@@ -385,7 +349,6 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       throw new SessionError((err as Error).message, 400);
     }
 
-    const srcBytes = new Uint8Array(await readFile(resolvePath(body.path)));
     const source = createSession("content-source", srcBytes);
 
     const reply = await callBridge(["pull", "--serial", body.serial]);
@@ -580,7 +543,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
     sendJson(res, result.ok ? 200 : 400, {
       ok: result.ok,
-      source: body.path,
+      source: srcPath,
       serial: body.serial,
       roots: perRoot,
       fields: ops.length,
@@ -597,71 +560,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
 
-  /* ---------------------------------------------------- clone-full --
-   * Full-account clone, ban-guarded.
-   *
-   * The donor's save is adopted whole — coherent content, no half-merged tree
-   * for the client to choke on — and then every identity leaf the account
-   * already declares (owner id, name, avatar, install clock, device, social
-   * roots) is rewritten to ours. That is the reference tool's model: copy the
-   * friend, then scrub their identity so the uploaded save declares us.
+  /* --------------------------------------------------- clone/source --
+   * Reports the one account the clone feature reads. The panel shows it so an
+   * operator can see exactly which file is about to land on their device, and
+   * so a missing or moved save surfaces as a clear message rather than a
+   * clone that fails partway through.
    */
-  if (route === "POST /api/clone-full") {
-    const body = await readJson<{
-      path: string;
-      serial: string;
-      keepProgress?: boolean;
-    }>(req);
-    if (!body.path || !body.serial) {
-      throw new SessionError("`path` and `serial` are required", 400);
+  if (route === "GET /api/clone/source") {
+    let exists = false;
+    let bytes = 0;
+    try {
+      const st = await stat(IGG_SOURCE);
+      exists = st.isFile();
+      bytes = st.size;
+    } catch {
+      exists = false;
     }
-    const keepProgress = body.keepProgress === true;
-
-    const srcBytes = new Uint8Array(await readFile(resolvePath(body.path)));
-    const source = createSession("full-source", srcBytes);
-
-    const reply = await callBridge(["pull", "--serial", body.serial]);
-    if (!(reply.ok && reply.b64)) {
-      sendJson(res, 400, reply);
-      return;
-    }
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64));
-
-    const beforePlain = target.plain;
-    const beforeIdentity = snapshotIdentity(beforePlain);
-
-    const donorPlain = source.plain;
-    const plan = planIdentityOps(beforePlain, donorPlain, { keepProgress });
-
-    // Adopt the donor's tree, then rewrite the identity onto it.
-    target.plain = donorPlain;
-    const result = target.apply(plan.ops, { refreshIntegrity: true });
-    const leak = result.ok ? identityDiff(beforeIdentity, target.plain) : [];
-    if (!result.ok || leak.length) {
-      // A moved identity field is a refusal, never a push.
-      target.plain = beforePlain;
-      target.lastApply = null;
-    }
-
-    sendJson(res, result.ok && leak.length === 0 ? 200 : 400, {
-      ok: result.ok && leak.length === 0,
-      guarded: true,
-      source: body.path,
-      serial: body.serial,
-      keepProgress,
-      donorFields: openSave(donorPlain).paths().length,
-      identityOps: plan.identityOps,
-      progressOps: plan.progressOps,
-      sanitized: plan.sanitized,
-      clamped: plan.clamped,
-      clampedCount: plan.clampedCount,
-      unrewritten: plan.unrewritten,
-      branchKept: plan.branchKept,
-      identityLeak: leak,
-      errorsTotal: result.errors.length,
-      errors: result.errors.slice(0, 40),
-      overview: result.ok && leak.length === 0 ? target.overview() : undefined,
-    });
+    sendJson(res, 200, { ok: true, path: IGG_SOURCE, exists, bytes });
     return;
   }
 

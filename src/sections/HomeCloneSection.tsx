@@ -1,226 +1,118 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AmActions } from "./AmActions.tsx";
-import { AmBar, AmCheck, AmEmpty, useToast } from "../components/ui.tsx";
+import { AmEmpty, useToast } from "../components/ui.tsx";
 import { useStudio } from "../lib/studio.tsx";
-import { api, type DiscoveredField } from "../lib/api.ts";
+import { api, type CloneSourceResponse } from "../lib/api.ts";
 
 /**
- * Friends Home Clone — transplant a friend's home into the live account.
+ * IGG Account Clone — put one specific account's home onto any connected
+ * client.
  *
- * "Using friend id" is the whole point: the friend list below is read from
- * the loaded save's real `UserProfileFriendsStorage` entries (the same save
- * ids the game server addresses card and life gifts with), and the source
- * path understands a `{id}` placeholder so one saved export per friend is
- * enough — `G:\hs_build\friends\{id}.db` becomes that friend's file.
+ * The feature has exactly one source: `data/IGG-account.db`, the IGG account
+ * shipped with the tool. There is no friend list, no manual id and no path to
+ * fill in, because "which account do I clone" is not a question this panel
+ * asks any more — the server resolves the file itself, so a clone cannot be
+ * pointed at the wrong save.
  *
- * The clone itself is a real, server-verified operation: every field under
- * the chosen section is read from the source save and applied into a fresh
- * pull of the connected device. This is the exact flow a furnished home was
- * proven with in game (a late-game living room, garden and courtyard landing
- * on an early account and persisting through play).
+ * What lands on the device is the account's **content**: every room and the
+ * furniture unlocked in it (`Repairs`), the chosen design per room
+ * (`RoomDesign`), the garden (`GardenObject`), plus characters, avatars,
+ * costumes and photo albums. That is the whole visible house, not the donor's
+ * name.
  *
- * Honest boundary, stated in the panel: Homescapes has no client API to
- * download another player's home the way Township's fetch-city call does, so
- * the source is a save file you hold for that id — not a live fetch.
+ * What deliberately does NOT travel is **progress**: level, stars, coins,
+ * statistics, quests, events and the account's secret values stay the
+ * connected client's own. That split is the entire ban guard — the 9.2.101 APK
+ * shows Playrix scores an account's progress server-side against its own
+ * history (`AntiCheat.Server.ScoreValidation`), and every full-save transplant
+ * measured on 2026-10-17 was answered with the "suspicious activity" warning,
+ * while the content-only clone ran clean. See `server/cloneGuard.ts`.
+ *
+ * Nothing is written until the operator presses Push in the action row, which
+ * backs the device's save up first, so Restore always undoes a clone.
  */
-const FRIENDS_PREFIX = "SpecialEvents.UserProfileFeature.v.UserProfileFriendsStorage.v.Friends.v.";
-
-const SECTIONS: { prefix: string; label: string }[] = [
-  { prefix: "Repairs.", label: "Home & rooms (Repairs.)" },
-  { prefix: "SpecialEvents.CardsCollection.", label: "Card album (CardsCollection.)" },
-  { prefix: "PlayerItems.", label: "Player items (PlayerItems.)" },
-];
-
-/** Sentinel prefix that switches the tab into full-account clone mode. */
-const FULL = "__full__";
-
-/**
- * Sentinel prefix for the ban-safe "complete home" clone: every content root
- * (rooms, décor, garden, characters, avatars) but no progression root.
- */
-const CONTENT = "__content__";
-
-interface Friend {
-  id: string;
-  name: string | null;
-  level: number | null;
-}
-
-function Head({ title }: { title: string }) {
-  return (
-    <div className="am-panel-head">
-      <img src="assets/ui/panel-bars.png" alt="" />
-      <h2 className="am-panel-title">{title}</h2>
-    </div>
-  );
-}
-
 export function HomeCloneSection() {
   const { overview, serial, setDeviceSerial, pushLog, reload } = useStudio();
   const toast = useToast();
 
-  const [friendFields, setFriendFields] = useState<DiscoveredField[]>([]);
-  const [friendsErr, setFriendsErr] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const [prefix, setPrefix] = useState(CONTENT);
-  const [picked, setPicked] = useState<Set<string>>(new Set());
-  const [manualId, setManualId] = useState("");
-  const [srcTemplate, setSrcTemplate] = useState("G:\\hs_build\\friends\\{id}.db");
+  const [source, setSource] = useState<CloneSourceResponse | null>(null);
+  const [sourceErr, setSourceErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [last, setLast] = useState<string | null>(null);
-  // Opt-in, and off by default: keeping our own level/coins under the donor's
-  // veteran town is the contradiction the server flags.
-  const [keepProgress, setKeepProgress] = useState(false);
 
   useEffect(() => {
-    if (!overview) {
-      setFriendFields([]);
-      setFriendsErr(null);
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
-    setLoading(true);
     api
-      .discover(FRIENDS_PREFIX, undefined, 1000)
-      .then((f) => {
-        if (!cancelled) {
-          setFriendFields(f);
-          setFriendsErr(null);
-        }
+      .cloneSource()
+      .then((s) => {
+        if (!cancelled) setSource(s);
       })
       .catch((err: unknown) => {
-        if (!cancelled) {
-          const msg = err instanceof Error ? err.message : String(err);
-          setFriendsErr(msg);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setSourceErr(err instanceof Error ? err.message : String(err));
       });
     return () => {
       cancelled = true;
     };
-  }, [overview]);
-
-  const friends = useMemo<Friend[]>(() => {
-    const m = new Map<string, Friend>();
-    for (const f of friendFields) {
-      const dot = f.key.indexOf(".");
-      if (dot < 0) continue;
-      const id = f.key.slice(0, dot);
-      const rest = f.key.slice(dot + 1);
-      let fr = m.get(id);
-      if (!fr) {
-        fr = { id, name: null, level: null };
-        m.set(id, fr);
-      }
-      if (rest === "v.playerName" && typeof f.value === "string") fr.name = f.value;
-      else if (rest === "v.playerLevel" && typeof f.value === "number") fr.level = f.value;
-    }
-    return [...m.values()].sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
-  }, [friendFields]);
-
-  const ids = useMemo(() => {
-    const set = new Set<string>(picked);
-    const mid = manualId.trim();
-    if (mid !== "") set.add(mid);
-    return [...set];
-  }, [picked, manualId]);
-
-  const resolvePath = (id: string): string =>
-    srcTemplate.includes("{id}") ? srcTemplate.split("{id}").join(id) : srcTemplate;
-
-  const previewPaths = ids.map((id) => ({ id, path: resolvePath(id) }));
+  }, []);
 
   const clone = async () => {
     if (!serial) {
       toast.warn("No device connected", "Pick a device in the title bar, then press Connect.");
       return;
     }
-    if (ids.length === 0) {
-      toast.warn("No friend selected", "Tick a friend, or type a save id.");
-      return;
-    }
-    if (srcTemplate.trim() === "") {
-      toast.warn("No source file", "Set the source save path (the {id} placeholder is optional).");
+    if (source && !source.exists) {
+      toast.err(
+        "Clone account missing",
+        `The tool cannot find its built-in account at ${source.path}.`,
+      );
       return;
     }
 
     setRunning(true);
     setLast(null);
-    let ok = 0;
-    let failed = 0;
-    for (const id of ids) {
-      const path = resolvePath(id);
-      try {
-        if (prefix === CONTENT) {
-          const res = await api.cloneContent({ path, serial });
-          ok++;
-          const roots = res.roots.filter((r) => r.fields > 0).length;
-          pushLog(
-            "ok",
-            `Complete home cloned from ${id}`,
-            `${res.fields} content fields · ${roots} roots · ${res.warningsTotal} warnings · ` +
-              `your level/coins/statistics untouched`,
-          );
-          if (res.warningsTotal > 0) {
-            pushLog("warn", `${res.warningsTotal} warnings`, res.warnings.slice(0, 4).join(" · "));
-          }
-        } else if (prefix === FULL) {
-          const res = await api.cloneFull({ path, serial, keepProgress });
-          ok++;
-          pushLog(
-            "ok",
-            `Guarded full clone from ${id}`,
-            `${res.donorFields} leaves · rewrote ${res.identityOps} identity fields · ` +
-              `${keepProgress ? `kept my progress (${res.progressOps}) · ` : ""}identity intact` +
-              `${res.clampedCount ? ` · ${res.clampedCount} impossible values zeroed` : ""}`,
-          );
-          if (res.identityLeak.length) {
-            pushLog("err", "Identity leak — refused", res.identityLeak.slice(0, 6).join(", "));
-          }
-        } else {
-          const res = await api.cloneSection({ path, prefix, serial });
-          ok++;
-          const warn = res.warnings.length;
-          pushLog(
-            "ok",
-            `Cloned ${prefix} from ${id}`,
-            `${res.fields} fields · ${res.summary.length} edits${warn ? ` · ${warn} warnings` : ""} · ${res.source}`,
-          );
-        }
-      } catch (err: unknown) {
-        failed++;
-        const msg = err instanceof Error ? err.message : String(err);
-        pushLog("err", `Clone failed for ${id}`, msg);
+    try {
+      // No path: the server reads its own data/IGG-account.db, so what lands on
+      // this device is always that one account.
+      const res = await api.cloneContent({ serial });
+      if (!res.ok) {
+        pushLog("err", "Clone failed", res.errors.slice(0, 4).join(" · ") || "unknown error");
+        toast.err("Clone failed", res.errors[0] ?? "unknown error");
+        setLast("failed");
+        return;
       }
-    }
-    setRunning(false);
-    setLast(`${ok} ok · ${failed} failed`);
-    if (ok > 0) {
-      // The clone routes pull straight off this device, so the active session
-      // is device-sourced — mark it so Push is allowed to write it back.
+      const roots = res.roots.filter((r) => r.fields > 0);
+      pushLog(
+        "ok",
+        "IGG account cloned",
+        `${res.fields} content fields · ${roots.length} roots · ` +
+          `${res.warningsTotal} warnings · your level/coins/statistics untouched`,
+      );
+      if (res.warningsTotal > 0) {
+        pushLog("warn", `${res.warningsTotal} warnings`, res.warnings.slice(0, 4).join(" · "));
+      }
+      setLast(`${res.fields} fields · ${roots.length} roots staged`);
+      // The clone route pulls straight off this device, so the active session is
+      // device-sourced — mark it so Push is allowed to write it back.
       setDeviceSerial(serial);
       toast.ok(
-        prefix === CONTENT
-          ? "Complete home cloned — progress untouched"
-          : prefix === FULL
-            ? "Full account cloned"
-            : "Home cloned into the device session",
-        `${ok} account${ok === 1 ? "" : "s"} staged. Press Push & Launch to write the save and open the game.`,
+        "IGG home cloned — your progress untouched",
+        "Press Push to write the save and open the game.",
       );
       await reload();
-    } else {
-      toast.err("Nothing cloned", "Every source failed — check the paths and that the device is online.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushLog("err", "Clone failed", msg);
+      toast.err("Clone failed", msg);
+      setLast("failed");
+    } finally {
+      setRunning(false);
     }
   };
 
   if (!overview) {
     return (
       <section className="am-panel">
-        <Head title="Friends Home Clone" />
+        <Head title="IGG Account Clone" />
         <AmEmpty
           title="No save loaded"
           detail="Press Connect in the title bar to read your client's live game first."
@@ -231,215 +123,99 @@ export function HomeCloneSection() {
 
   return (
     <section className="am-panel">
-      <Head title="Friends Home Clone" />
+      <Head title="IGG Account Clone" />
 
       <div className="am-hint" style={{ margin: "8px 0 14px", lineHeight: 1.5 }}>
-        Clone another player's home into your connected device, addressed by their real friend id.
-        Use <b>Complete home</b> — it copies every room, decoration, character and avatar but leaves
-        your own level, coins and statistics alone, which is what keeps the server's progress check
-        quiet. <b>Everything</b> is the old full-account clone and <i>does</i> get flagged. The device
-        is re-pulled first, so the clone lands on what the game holds right now; nothing is written
-        until you press <b>Push &amp; Launch</b>.
+        Clone one account — the <b>IGG account</b> shipped with this tool — into whichever client
+        you have connected. It brings the whole house: every room and the furniture unlocked in it,
+        the garden, the decorations, characters, avatars, costumes and photo albums. Your own level,
+        coins, stars and statistics stay exactly as they are, which is what keeps the server's
+        progress check quiet. The device is re-pulled first, so the clone lands on what the game
+        holds right now, and nothing is written until you press <b>Push</b>.
       </div>
 
-      <div className="am-label">What to clone</div>
-      <div className="am-row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
-        <button
-          type="button"
-          className={prefix === CONTENT ? "am-ghost am-ghost--primary" : "am-ghost"}
-          aria-pressed={prefix === CONTENT}
-          title="Recommended. Copies the friend's whole home — rooms, furniture, décor, garden, characters, avatars — but leaves your own level, coins, statistics, quests and secret values exactly as they are, so the server's progress check has nothing to flag."
-          onClick={() => setPrefix(CONTENT)}
-        >
-          ★ Complete home (recommended)
-        </button>
-        <button
-          type="button"
-          className={prefix === FULL ? "am-ghost am-ghost--primary" : "am-ghost"}
-          aria-pressed={prefix === FULL}
-          title="Adopt the friend's whole save with the ban guard on. Note: a whole save from a much higher account is still flagged by the server's progress check — use Complete home instead."
-          onClick={() => setPrefix(FULL)}
-        >
-          ⚠ Everything (full clone — can be banned)
-        </button>
-        {SECTIONS.map((s) => (
-          <button
-            key={s.prefix}
-            type="button"
-            className={prefix === s.prefix ? "am-ghost am-ghost--primary" : "am-ghost"}
-            aria-pressed={prefix === s.prefix}
-            onClick={() => setPrefix(s.prefix)}
-          >
-            {s.label}
-          </button>
-        ))}
-      </div>
-
-      {prefix === CONTENT ? (
-        <div className="am-hint" style={{ margin: "0 0 12px", lineHeight: 1.5 }}>
-          <b>Complete home (the clone that does not get banned).</b> Copies the friend's{" "}
-          <b>content</b> — every room and its furniture, the garden, decorations, characters,
-          avatars, costumes and photo albums — onto your connected client. It deliberately does{" "}
-          <b>not</b> copy level, stars, coins, statistics, quests, events or the save's secret
-          values, so the server's progress score is still computed from <i>your own</i> history and
-          finds nothing inconsistent. Your account keeps its level and balance; it just gains the
-          friend's house.
-        </div>
-      ) : null}
-
-      {prefix === FULL ? (
-        <div className="am-hint" style={{ margin: "0 0 12px", lineHeight: 1.5 }}>
-          <b>Full clone (ban-guarded)</b> takes the friend's whole save — rooms, decorations, items,
-          pets, cards, events, passes <i>and the account history behind them</i> — then rewrites only
-          the fields that declare <b>whose</b> save it is: your owner id, name, avatar, device
-          fingerprint and social roots. Lifetime counters the donor overflowed into a negative are
-          zeroed.
-          <div style={{ marginTop: 8 }}>
-            <b>Why the history travels.</b> A transplanted level-656 town sitting under counters
-            that still say “installed today, 2 sessions, 42 minutes played” is internally impossible,
-            and that contradiction is what Playrix reads (measured 2026-10-17: a clone that kept the
-            low account's install clock was flagged; the reference tool records the same finding —
-            <i> “copying the history with the town is what removes it”</i>). So the install date,
-            session count, play time, `LID_*` and `PAI`/`ASN_SAVE_DATA` come with the town.
-          </div>
-          <div style={{ marginTop: 8 }}>
-            <AmCheck
-              on={keepProgress}
-              onChange={() => setKeepProgress((v) => !v)}
-              label="Also keep my own level & coins"
-              title="Not recommended: leaves your low level/balance under a veteran town, which is exactly the contradiction the server flags"
-            />
-          </div>
-        </div>
-      ) : null}
-
-      <div className="am-label">Friends in this save</div>
-      {friendsErr ? (
+      <div className="am-label">Source account</div>
+      {sourceErr ? (
         <div className="am-hint" style={{ margin: "6px 0" }}>
-          Could not read the friend list: {friendsErr}
+          Could not read the clone source: {sourceErr}
         </div>
-      ) : loading && friends.length === 0 ? (
+      ) : !source ? (
         <div className="am-hint" style={{ margin: "6px 0" }}>
-          Reading the friend list…
-        </div>
-      ) : friends.length === 0 ? (
-        <div className="am-hint" style={{ margin: "6px 0" }}>
-          This save carries no friend list — type a save id below instead.
+          Reading the source account…
         </div>
       ) : (
-        <>
-          <AmBar
-            count={picked.size}
-            total={friends.length}
-            onAll={() => setPicked(new Set(friends.map((f) => f.id)))}
-            onNone={() => setPicked(new Set())}
-            hint="each ticked id resolves to its own source file"
-          />
-          <div className="am-friends">
-            {friends.map((f) => (
-              <AmCheck
-                key={f.id}
-                on={picked.has(f.id)}
-                onChange={() => {
-                  setPicked((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(f.id)) next.delete(f.id);
-                    else next.add(f.id);
-                    return next;
-                  });
-                }}
-                label={
-                  <>
-                    {f.name ?? f.id}
-                    {f.name ? (
-                      <span className="am-hint" style={{ marginLeft: 6 }}>
-                        {f.id}
-                      </span>
-                    ) : null}
-                    {f.level !== null ? (
-                      <span className="am-hint" style={{ marginLeft: 6 }}>
-                        lvl {f.level}
-                      </span>
-                    ) : null}
-                  </>
-                }
-                title={`${f.name ?? f.id} — save id ${f.id}`}
-              />
-            ))}
-          </div>
-        </>
+        <div className="am-hint" style={{ margin: "6px 0", lineHeight: 1.5, wordBreak: "break-all" }}>
+          <b>IGG account</b> — <code>{source.path}</code>
+          {source.exists ? (
+            <span> · {(source.bytes / (1024 * 1024)).toFixed(2)} MB</span>
+          ) : (
+            <span style={{ color: "#c0392b" }}> · file missing</span>
+          )}
+        </div>
       )}
-
-      <div className="am-label" style={{ marginTop: 14 }}>
-        Manual friend id
-      </div>
-      <div className="am-row" style={{ flexWrap: "wrap", gap: 8 }}>
-        <input
-          className="am-input"
-          value={manualId}
-          placeholder="e.g. hbA7pixgD7"
-          aria-label="Manual friend save id"
-          onChange={(e) => setManualId(e.target.value)}
-        />
-      </div>
-
-      <div className="am-label" style={{ marginTop: 14 }}>
-        Source save path
-      </div>
-      <div className="am-row" style={{ flexWrap: "wrap", gap: 8 }}>
-        <input
-          className="am-input"
-          style={{ minWidth: 320 }}
-          value={srcTemplate}
-          placeholder="G:\hs_build\friends\{id}.db"
-          aria-label="Source save path template"
-          onChange={(e) => setSrcTemplate(e.target.value)}
-        />
-      </div>
-      <div className="am-hint" style={{ margin: "6px 0 0" }}>
-        Use <code>{"{id}"}</code> where the friend id belongs, or a fixed path for a single
-        source save.
-      </div>
-
-      {previewPaths.length > 0 ? (
-        <div className="am-hint" style={{ margin: "10px 0 0", lineHeight: 1.5 }}>
-          Will read: {previewPaths.map((p) => p.path).join(" · ")}
+      {source && !source.exists ? (
+        <div className="am-hint" style={{ margin: "6px 0" }}>
+          The built-in account file is not where the tool expects it, so cloning is disabled until
+          it is restored.
         </div>
       ) : null}
 
-      <div className="am-row" style={{ margin: "14px 0" }}>
+      <div className="am-label" style={{ marginTop: 14 }}>
+        What lands on your device
+      </div>
+      <div className="am-hint" style={{ margin: "6px 0 0", lineHeight: 1.6 }}>
+        <b>Copied</b> — every room and its repairs (so the house is built and its furniture is
+        unlocked), every room design the IGG account owns (this is what keeps the decorated
+        variants — the seasonal and event designs — on show instead of resetting to the plain base
+        ones), the furniture design chosen in each room, the garden and its decorations,
+        removed/erased objects, characters, avatars, costumes, minigames, match-3 state and photo
+        albums.
+        <br />
+        <b>Left yours</b> — level, stars, coins, lives, statistics, quests, events, season passes,
+        player items and the save's secret values. Your account keeps its own history; it just gains
+        the IGG house.
+      </div>
+
+      <div className="am-row" style={{ margin: "16px 0" }}>
         <button
           type="button"
           className="am-ghost am-ghost--primary"
-          disabled={running || !serial}
+          disabled={running || !serial || (source !== null && !source.exists)}
           title={
             serial
-              ? prefix === CONTENT
-                ? "Pull the device and transplant every content root (home, décor, characters)"
-                : "Pull the device and transplant the selection"
+              ? "Pull the device, then transplant the IGG account's whole home into it"
               : "Connect a device first"
           }
           onClick={() => void clone()}
         >
-          {running ? "Cloning…" : "Clone into connected device"}
+          {running ? "Cloning…" : "Clone IGG account"}
         </button>
         {!serial ? <span className="am-hint">no device connected</span> : null}
         {last ? <span className="am-hint">{last}</span> : null}
       </div>
 
       <div className="am-hint" style={{ margin: "8px 0 4px", lineHeight: 1.5 }}>
-        <b>Honest note.</b> Homescapes exposes no client call to download another player's account
-        (unlike Township's fetch-city request), so the clone source is a save file you hold for that
-        friend id. The 9.2.101 APK shows the ban is decided <i>server-side</i>: Playrix scores an
+        <b>Honest note.</b> Homescapes exposes no client call to download another player's account,
+        so the clone source is a save file held by the tool — this panel never fetches anything
+        live. The 9.2.101 APK shows the ban is decided <i>server-side</i>: Playrix scores an
         account's progress against its own history (`AntiCheat.Server.ScoreValidation` → the
         “suspicious activity” window), and that score cannot be rewritten from a save. Measured
         2026-10-17: a byte-for-byte full clone <i>and</i> a ban-guarded full clone both ended in the
-        warning. <b>Complete home</b> avoids the check entirely by never copying progress — your level,
-        balances, statistics and secret values stay yours. Every push backs your save up first, so
-        <b> Restore</b> always undoes a clone.
+        warning. <b>That is why this clone copies content only</b> — never progress — so your level,
+        balances, statistics and secret values stay yours. Every push backs your save up first, so{" "}
+        <b>Restore</b> always undoes a clone.
       </div>
 
       <AmActions />
     </section>
+  );
+}
+
+function Head({ title }: { title: string }) {
+  return (
+    <div className="am-panel-head">
+      <img src="assets/ui/panel-bars.png" alt="" />
+      <h2 className="am-panel-title">{title}</h2>
+    </div>
   );
 }
