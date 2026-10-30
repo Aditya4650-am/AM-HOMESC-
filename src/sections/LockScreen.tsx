@@ -139,11 +139,12 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
           <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>License key</label>
           <input
             value={key}
-            onChange={(e) => setKey(e.target.value.toUpperCase())}
+            onChange={(e) => setKey(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void activate()}
             placeholder="HS-XXXXX-XXXXX-XXXXX-XXXXX  (or your owner passcode)"
             spellCheck={false}
             autoComplete="off"
+            type="password"
             style={{ width: "100%", background: S.input, border: `1px solid ${S.border}`, borderRadius: 10, padding: "10px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 13, letterSpacing: 1, color: S.fg, outline: "none", boxSizing: "border-box" }}
           />
             <div style={{ marginTop: 6, fontSize: 11, color: S.muted }}>
@@ -154,7 +155,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
             disabled={busy}
             style={{ marginTop: 12, width: "100%", background: S.primary, color: "#fff", border: "none", borderRadius: 10, padding: "11px 16px", fontSize: 14, fontWeight: 600, cursor: busy ? "wait" : "pointer", opacity: busy ? 0.6 : 1 }}
           >
-            {busy ? "Activating…" : "Activate"}
+            {busy ? "Unlocking…" : "Unlock"}
           </button>
         </div>
 
