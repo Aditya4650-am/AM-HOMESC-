@@ -7,6 +7,12 @@ the device and hosts the UI.
 
 ## Features
 
+- **License login** — keys are `HS-XXXXX-XXXXX-XXXXX-XXXXX`, HMAC-fingerprinted
+  (the key itself is never stored), bound to a device id, with plan + expiry and
+  a per-key device limit. Activation returns a 12-hour AES-256-GCM token, not the
+  key. The Owner Hub (behind `HS_OWNER`) issues, lists, revokes, restores and
+  device-resets keys. Enforcement turns on only when `HS_MASTER` is set, so a
+  local run stays an ungated editor.
 - **MAX_GP** — one click detects the live season pass and writes both the season
   `Points` (10,000 / 9,999) and the `PlayerItems.<season>GoldenTicket = 1` item,
   with preview, audit and idempotent re-apply.
@@ -60,15 +66,28 @@ Equivalent manual settings for a **Web Service**:
 | Instance Type | Free (or Starter for no spin-down) |
 | Root Directory | *(repo root)* |
 
+| Environment variable | Value | Needed |
+| --- | --- | --- |
+| `NODE_VERSION` | `22` | always |
+| `HS_MASTER` | ≥32 random chars | to turn the login on |
+| `HS_OWNER` | ≥12 chars, private | to use the Owner Hub |
+| `DATABASE_URL` | Postgres (Neon) connection string | **mandatory in the cloud** — otherwise issued keys are lost on every restart |
+
+Generate the master key, never invent it:
+`[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)` in
+PowerShell, then paste the hex. Changing `HS_MASTER` invalidates every issued key.
+
 `src/server/main.ts` reads Render's injected `PORT` and binds `0.0.0.0`
 automatically; a local `npm start` still binds `127.0.0.1:8787`.
 
-**What works in the cloud:** loading a save (upload or path), MAX_GP preview/apply,
-all value/cosmetic/card edits, review, export.
+**What works in the cloud:** the license login, **Open save** (pick a `SaveGame.db`
+off your disk — this is how a save enters a hosted deployment), MAX_GP
+preview/apply, all value/cosmetic/card edits, review, export.
 
 **What needs a local machine:** the `/api/device/*` and `/api/clone-content` routes
 shell out to `client/hc_client.py` + `adb` against a connected Android device, which
-a Render container cannot reach. Use the tool locally (or in the desktop shell) for
-device Push; use Render for the web editor. Sessions live in memory, so a free-plan
+a Render container cannot reach. A hosted deployment has no ADB, so `Connect` finds
+no device there by design — use **Open save**, edit, then **Export** and push the
+file from a local run. Sessions live in memory, so a free-plan
 spin-down ends any open session.
 

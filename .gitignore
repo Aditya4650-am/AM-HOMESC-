@@ -7,3 +7,6 @@ dist/
 decoded/*.db
 *.hcsbak
 cycle-state.json
+
+# Local license store (used only when DATABASE_URL is unset)
+data/.hs-licenses.json

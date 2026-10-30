@@ -1,6 +1,9 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { StudioProvider, useStudio, type SectionId } from "../lib/studio.tsx";
-import { ToastProvider, AmEmpty } from "./ui.tsx";
+import { ToastProvider, AmEmpty, useToast } from "./ui.tsx";
+import { LockScreen } from "../sections/LockScreen.tsx";
+import type { LicenseSnap } from "../lib/api.ts";
+import { api } from "../lib/api.ts";
 import { DashboardSection } from "../sections/DashboardSection.tsx";
 import { StatsSection } from "../sections/StatsSection.tsx";
 import { CardsSection } from "../sections/CardsSection.tsx";
@@ -27,11 +30,16 @@ import { PetsSection } from "../sections/PetsSection.tsx";
  */
 
 export function StudioApp() {
+  const [license, setLicense] = useState<LicenseSnap | null>(null);
   return (
     <ToastProvider>
-      <StudioProvider>
-        <Shell />
-      </StudioProvider>
+      {license ? (
+        <StudioProvider>
+          <Shell />
+        </StudioProvider>
+      ) : (
+        <LockScreen onUnlocked={setLicense} />
+      )}
     </ToastProvider>
   );
 }
@@ -93,8 +101,44 @@ function Shell() {
     connecting,
     push,
     pushing,
+    reload,
   } = useStudio();
   const [win, setWin] = useState<WinState>("max");
+  const toast = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  /**
+   * OPEN SAVE — the path that works on a hosted deployment.
+   *
+   * The desktop flow pulls the save off a device over ADB, which only exists on
+   * the operator's own machine. In the cloud the operator picks the file
+   * instead; the server decodes it exactly like a pulled container, so every
+   * tab behaves identically.
+   */
+  async function onOpenSave(e: React.ChangeEvent<HTMLInputElement>): Promise<void> {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setUploading(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(fr.error ?? new Error("could not read that file"));
+        fr.readAsDataURL(file);
+      });
+      const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+      if (!b64) throw new Error("the file is empty");
+      const ov = await api.uploadSave(file.name, b64);
+      await reload();
+      toast.ok("Save opened", `${file.name} · ${ov?.meta?.name ?? "loaded"}`);
+    } catch (err) {
+      toast.err("Could not open save", err instanceof Error ? err.message : String(err));
+    } finally {
+      setUploading(false);
+    }
+  }
 
   useEffect(() => {
     void refreshDevices();
@@ -226,6 +270,25 @@ function Shell() {
               aria-label="Rescan devices"
             >
               ↻
+            </button>
+
+            {/* Open a save straight from disk. This is the cloud path: Render
+                cannot reach an emulator, so a file is how a save gets in. */}
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".db,.hcsbak,.sav,application/octet-stream"
+              className="hidden"
+              onChange={(e) => void onOpenSave(e)}
+            />
+            <button
+              type="button"
+              className="am-ghost"
+              onClick={() => fileRef.current?.click()}
+              disabled={uploading}
+              title="Open a SaveGame.db from this computer (works without a device)"
+            >
+              {uploading ? "Opening…" : "Open save"}
             </button>
 
             <span

@@ -34,6 +34,18 @@ import {
   type EditOp,
 } from "../engine/index.ts";
 import { MAX_GP } from "../engine/MAX_GP.ts";
+import {
+  activate as licenseActivate,
+  issue as licenseIssue,
+  licenseRequired,
+  LicenseError,
+  requireLicense,
+  resetDevices as licenseResetDevices,
+  setActive as licenseSetActive,
+  snapshot as licenseSnapshot,
+  storageKind as licenseStorageKind,
+  store as licenseStore,
+} from "./license.ts";
 import { asciiTokens, decodeBlkZstd, scanVsoDir, uniqueTokens } from "../engine/upk.ts";
 import {
   SessionError,
@@ -99,6 +111,10 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 function sendError(res: ServerResponse, err: unknown): void {
+  if (err instanceof LicenseError) {
+    sendJson(res, err.status, { ok: false, error: err.message, licenseRequired: true });
+    return;
+  }
   if (err instanceof SessionError) {
     sendJson(res, err.status, { ok: false, error: err.message });
     return;
@@ -232,6 +248,17 @@ interface CardsGrantBody {
   refreshIntegrity?: boolean;
 }
 
+interface OwnerBody {
+  passcode?: string;
+  action?: "issue" | "list" | "revoke" | "restore" | "reset-devices";
+  plan?: "trial" | "week" | "month" | "year" | "lifetime";
+  days?: number;
+  devices?: number;
+  count?: number;
+  note?: string;
+  key?: string;
+}
+
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const route = `${req.method} ${url.pathname}`;
 
@@ -239,6 +266,61 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     sendJson(res, 200, { ok: true, app: "Homescapes Save Studio", version: "0.1.0" });
     return;
   }
+
+  /* ---------------------------------------------------------- license --
+   * The login. `/api/health` and everything under `/api/license/*` stay open so
+   * the lock screen can be served and keys can be activated; every other API
+   * route is gated when `HS_MASTER` is configured.
+   */
+  if (route === "GET /api/license/status") {
+    sendJson(res, 200, {
+      ok: true,
+      required: licenseRequired(),
+      storage: licenseStorageKind(),
+      ownerConfigured: Boolean(process.env.HS_OWNER?.trim()),
+    });
+    return;
+  }
+
+  if (route === "POST /api/license/activate") {
+    const body = await readJson<{ key?: string; deviceId?: string }>(req);
+    const { token, snap } = await licenseActivate(body.key ?? "", body.deviceId ?? "");
+    sendJson(res, 200, { ok: true, token, license: snap });
+    return;
+  }
+
+  if (route === "POST /api/license/owner") {
+    // The owner passcode IS the credential here — an owner must be able to
+    // issue the very first key, before any token exists.
+    const body = await readJson<OwnerBody>(req);
+    const passcode = String(body.passcode ?? "");
+    if (!process.env.HS_OWNER?.trim()) throw new SessionError("HS_OWNER is not configured on this server", 503);
+    if (passcode !== process.env.HS_OWNER.trim()) throw new SessionError("Wrong owner passcode", 401);
+    if (body.action === "issue") {
+      const issued = await licenseIssue(body);
+      sendJson(res, 200, { ok: true, issued });
+      return;
+    }
+    if (body.action === "list") {
+      const rows = await licenseStore.all();
+      sendJson(res, 200, { ok: true, rows: rows.map((r) => ({ ...r, fp: r.fp.slice(0, 12), snap: licenseSnapshot(r) })) });
+      return;
+    }
+    if (body.action === "revoke" || body.action === "restore") {
+      const done = await licenseSetActive(body.key ?? "", body.action === "restore");
+      sendJson(res, done ? 200 : 404, { ok: done, error: done ? undefined : "no such key" });
+      return;
+    }
+    if (body.action === "reset-devices") {
+      const done = await licenseResetDevices(body.key ?? "");
+      sendJson(res, done ? 200 : 404, { ok: done, error: done ? undefined : "no such key" });
+      return;
+    }
+    throw new SessionError("`action` must be issue | list | revoke | restore | reset-devices", 400);
+  }
+
+  // Everything below this line edits a save, so it needs a valid token.
+  requireLicense(req);
 
   if (route === "GET /api/sessions") {
     sendJson(res, 200, { ok: true, sessions: listSessions() });

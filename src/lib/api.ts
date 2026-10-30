@@ -6,6 +6,8 @@
  * why" is the most useful thing it can say.
  */
 
+import { getToken } from "./auth-store.ts";
+
 export interface SessionMeta {
   id: string;
   name: string;
@@ -256,10 +258,45 @@ export interface FieldDetail {
   tag?: string;
 }
 
+export interface LicenseSnap {
+  plan: string;
+  /** 0 = never expires (lifetime / owner). */
+  expiresAt: number;
+  remainingMs: number;
+  status: "active" | "expired" | "revoked";
+  owner: boolean;
+  devices: number;
+  maxDevices: number;
+}
+
+export interface OwnerRequest {
+  passcode: string;
+  action: "issue" | "list" | "revoke" | "restore" | "reset-devices";
+  plan?: "trial" | "week" | "month" | "year" | "lifetime";
+  days?: number;
+  devices?: number;
+  count?: number;
+  note?: string;
+  key?: string;
+}
+
+export interface OwnerRow {
+  fp: string;
+  plan: string;
+  createdAt: number;
+  expiresAt: number;
+  maxDevices: number;
+  devices: string[];
+  active: boolean;
+  note: string;
+  snap: LicenseSnap;
+}
+
 class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly licenseRequired = false,
   ) {
     super(message);
     this.name = "ApiError";
@@ -267,7 +304,12 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  // The activation token rides every API call; the server ignores it unless
+  // HS_MASTER is set, so local runs behave exactly as before.
+  const token = getToken();
+  const headers = new Headers(init?.headers);
+  if (token && path.startsWith("/api/")) headers.set("x-hs-token", token);
+  const res = await fetch(path, { ...init, headers });
   let body: any;
   try {
     body = await res.json();
@@ -275,7 +317,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(`server returned ${res.status} with a non-JSON body`, res.status);
   }
   if (!res.ok || body?.ok === false) {
-    throw new ApiError(body?.error ?? `request failed (${res.status})`, res.status);
+    throw new ApiError(
+      body?.error ?? `request failed (${res.status})`,
+      res.status,
+      body?.licenseRequired === true,
+    );
   }
   return body as T;
 }
@@ -290,6 +336,25 @@ function post<T>(path: string, payload: unknown): Promise<T> {
 
 export const api = {
   health: () => request<{ ok: boolean; app: string; version: string }>("/api/health"),
+
+  /* -------------------------------------------------------------- license -- */
+  licenseStatus: () =>
+    request<{ ok: boolean; required: boolean; storage: "postgres" | "file"; ownerConfigured: boolean }>(
+      "/api/license/status",
+    ),
+
+  licenseActivate: (key: string, deviceId: string) =>
+    post<{ ok: boolean; token: string; license: LicenseSnap }>("/api/license/activate", { key, deviceId }),
+
+  licenseOwner: (payload: OwnerRequest) =>
+    post<{ ok: boolean; issued?: { key: string; snap: LicenseSnap }[]; rows?: OwnerRow[] }>(
+      "/api/license/owner",
+      payload,
+    ),
+
+  /** Load a save from the operator's own disk (works in the cloud). */
+  uploadSave: (name: string, b64: string) =>
+    post<{ ok: boolean; overview: OverviewPayload }>("/api/session/load", { name, b64 }).then((r) => r.overview),
 
   overview: (sessionId?: string) =>
     request<{ ok: boolean; overview: OverviewPayload }>(

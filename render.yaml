@@ -3,6 +3,11 @@
 # Render injects PORT; src/server/main.ts listens on 0.0.0.0 whenever PORT is
 # set, so no manual host/port editing is needed. The build produces ./dist,
 # which the same Node process serves alongside /api/*.
+#
+# HS_MASTER turns the login on: every /api route except /api/health and
+# /api/license/* then needs an activated key. Leave it unset for a local run
+# with no gate. DATABASE_URL keeps issued keys across restarts — without it the
+# file store in data/ is wiped by every deploy and free-plan spin-down.
 services:
   - type: web
     name: homescapes-save-studio
@@ -15,3 +20,9 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: HS_MASTER
+        sync: false
+      - key: HS_OWNER
+        sync: false
+      - key: DATABASE_URL
+        sync: false

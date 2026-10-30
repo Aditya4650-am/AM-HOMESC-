@@ -17,6 +17,7 @@ import {
   type OverviewPayload,
 } from "./api.ts";
 import { useToast } from "../components/ui.tsx";
+import { clearToken } from "./auth-store.ts";
 
 export type SectionId =
   | "dashboard"
@@ -143,6 +144,13 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       // A 409 simply means no save is loaded yet — that is the normal first
       // screen, not an error worth alarming the user about.
+      if (err instanceof ApiError && err.licenseRequired) {
+        // The activation token expired or was revoked: drop it and return to
+        // the lock screen instead of leaving every tab silently broken.
+        clearToken();
+        window.location.reload();
+        return false;
+      }
       if (err instanceof ApiError && err.status === 409) {
         setOverview(null);
         setValues({});
