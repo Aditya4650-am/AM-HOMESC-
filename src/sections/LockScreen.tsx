@@ -17,6 +17,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
   const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showKey, setShowKey] = useState(false);
 
   const [ownerOpen, setOwnerOpen] = useState(false);
   const [pass, setPass] = useState("");
@@ -137,16 +138,25 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
         {/* activation */}
         <div style={{ background: S.card, border: `1px solid ${S.border}`, borderRadius: 14, padding: 16 }}>
           <label style={{ display: "block", fontSize: 13, fontWeight: 500, marginBottom: 6 }}>License key</label>
-          <input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void activate()}
-            placeholder="HS-XXXXX-XXXXX-XXXXX-XXXXX  (or your owner passcode)"
-            spellCheck={false}
-            autoComplete="off"
-            type="password"
-            style={{ width: "100%", background: S.input, border: `1px solid ${S.border}`, borderRadius: 10, padding: "10px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 13, letterSpacing: 1, color: S.fg, outline: "none", boxSizing: "border-box" }}
-          />
+          <div style={{ position: "relative" }}>
+            <input
+              value={key}
+              onChange={(e) => setKey(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void activate()}
+              placeholder="HS-XXXXX-XXXXX-XXXXX-XXXXX  (or your owner passcode)"
+              spellCheck={false}
+              autoComplete="off"
+              type={showKey ? "text" : "password"}
+              style={{ width: "100%", background: S.input, border: `1px solid ${S.border}`, borderRadius: 10, padding: "10px 12px", paddingRight: 50, fontFamily: "JetBrains Mono, monospace", fontSize: 13, letterSpacing: 1, color: S.fg, outline: "none", boxSizing: "border-box" }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: S.muted, fontSize: 11, cursor: "pointer" }}
+            >
+              {showKey ? "hide" : "show"}
+            </button>
+          </div>
             <div style={{ marginTop: 6, fontSize: 11, color: S.muted }}>
               Tip: paste your <b>owner passcode</b> (HS_OWNER value) here to log in as owner.
             </div>
