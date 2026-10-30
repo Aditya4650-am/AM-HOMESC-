@@ -2,8 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { StudioProvider, useStudio, type SectionId } from "../lib/studio.tsx";
 import { ToastProvider, AmEmpty, useToast } from "./ui.tsx";
 import { LockScreen } from "../sections/LockScreen.tsx";
-import type { LicenseSnap } from "../lib/api.ts";
-import { api } from "../lib/api.ts";
+import { api, downloadSave, type LicenseSnap } from "../lib/api.ts";
 import { DashboardSection } from "../sections/DashboardSection.tsx";
 import { StatsSection } from "../sections/StatsSection.tsx";
 import { CardsSection } from "../sections/CardsSection.tsx";
@@ -107,6 +106,7 @@ function Shell() {
   const toast = useToast();
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   /**
    * OPEN SAVE — the path that works on a hosted deployment.
@@ -137,6 +137,27 @@ function Shell() {
       toast.err("Could not open save", err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
+    }
+  }
+
+  /** Export the active session to a SaveGame.db file (for the local push). */
+  async function onExport(): Promise<void> {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const blob = await downloadSave(overview?.meta?.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "SaveGame.db";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (err) {
+      toast.err("Could not export save", err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -289,6 +310,16 @@ function Shell() {
               title="Open a SaveGame.db from this computer (works without a device)"
             >
               {uploading ? "Opening…" : "Open save"}
+            </button>
+
+            <button
+              type="button"
+              className="am-ghost"
+              onClick={() => void onExport()}
+              disabled={exporting || !overview}
+              title="Download the current session as SaveGame.db"
+            >
+              {exporting ? "Exporting…" : "Export"}
             </button>
 
             <span

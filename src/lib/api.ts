@@ -475,6 +475,31 @@ export const api = {
     post<{ ok: boolean; restoredFrom?: string; error?: string }>("/api/device/restore", { serial }),
 };
 
+/**
+ * Download the active session as a SaveGame.db binary.
+ *
+ * The desktop flow: the web UI (hosted or local) exports the session bytes and
+ * hands them to the local ADB bridge, which pushes into the emulator.
+ */
+export async function downloadSave(sessionId?: string): Promise<Blob> {
+  const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  const token = getToken();
+  const headers = new Headers();
+  if (token) headers.set("x-hs-token", token);
+  const res = await fetch(`/api/export${qs}`, { headers });
+  if (!res.ok) {
+    let error = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body?.error) error = String(body.error);
+    } catch {
+      /* keep fallback */
+    }
+    throw new Error(error);
+  }
+  return res.blob();
+}
+
 export { ApiError, toBase64, fromBase64 };
 
 function toBase64(bytes: Uint8Array): string {
