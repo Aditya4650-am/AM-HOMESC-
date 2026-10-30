@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AmActions } from "./AmActions.tsx";
 import { AmEmpty, useToast } from "../components/ui.tsx";
 import { useStudio } from "../lib/studio.tsx";
-import { api, type CloneSourceResponse } from "../lib/api.ts";
+import { api, type CloneSourceResponse, type SeasonPassUnlockResponse } from "../lib/api.ts";
 
 /**
  * IGG Account Clone — put one specific account's home onto any connected
@@ -39,6 +39,9 @@ export function HomeCloneSection() {
   const [sourceErr, setSourceErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [last, setLast] = useState<string | null>(null);
+
+  const [spRunning, setSpRunning] = useState(false);
+  const [spResult, setSpResult] = useState<SeasonPassUnlockResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,6 +109,53 @@ export function HomeCloneSection() {
       setLast("failed");
     } finally {
       setRunning(false);
+    }
+  };
+
+  /**
+   * Golden Pass, both rows, one tap — and unlike the clone above this one
+   * pushes itself, because the operator asked for the unlock and the write in
+   * a single action. The response carries every field it touched, so the log
+   * states the values rather than a bare "done".
+   */
+  const unlockSeasonPass = async () => {
+    if (!serial) {
+      toast.warn("No device connected", "Pick a device in the title bar, then press Connect.");
+      return;
+    }
+    setSpRunning(true);
+    setSpResult(null);
+    try {
+      const res = await api.seasonPassUnlock(serial);
+      setSpResult(res);
+      if (!res.ok) {
+        pushLog("err", "Golden Pass unlock failed", res.pushError ?? "unknown error");
+        toast.err("Golden Pass unlock failed", res.pushError ?? "unknown error");
+        return;
+      }
+      pushLog(
+        "warn",
+        `State written but NOT kept — ${res.season}`,
+        `${res.pointsPath} written as ${res.points} and ${res.completedStages} of 31 stages ` +
+          `marked complete; the game deletes the points currency on the next sync, so the ` +
+          `pass still renders at stage 1/31.`,
+      );
+      pushLog("warn", "Gold row not unlocked", res.goldRow.reason);
+      for (const n of res.notes) pushLog("warn", "Golden Pass note", n);
+      if (res.warningsTotal > 0) {
+        pushLog("warn", `${res.warningsTotal} warnings`, res.warnings.slice(0, 4).join(" · "));
+      }
+      toast.warn(
+        "Written, but the game strips it",
+        "The tier currency is server-owned and was removed; the pass did not unlock.",
+      );
+      await reload();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      pushLog("err", "Golden Pass unlock failed", msg);
+      toast.err("Golden Pass unlock failed", msg);
+    } finally {
+      setSpRunning(false);
     }
   };
 
@@ -205,6 +255,86 @@ export function HomeCloneSection() {
         balances, statistics and secret values stay yours. Every push backs your save up first, so{" "}
         <b>Restore</b> always undoes a clone.
       </div>
+
+      <div className="am-label" style={{ marginTop: 20 }}>
+        Golden Pass — tested, does not unlock
+      </div>
+      <div className="am-hint" style={{ margin: "6px 0 0", lineHeight: 1.6 }}>
+        <b>Measured result, 2026-10-20 — real in-game test.</b> The free-row state was written and
+        pushed to the live device, and read back from the game's own re-saved file: all 31 stages,
+        <code>currProgress=30</code>, <code>currentOpenedStageIndex=31</code> all <i>survived
+        untouched</i>, and the account was <b>not</b> rolled back (level 40, 123,456 coins, 42
+        stars, 13 areas — all intact, no popup). But the game <b>deleted{" "}
+        <code>Currency.SSPProcedure46Points</code></b>, and the pass rendered at stage 1 of 31 with
+        the next stage locked at <code>0/1</code>. <b>The displayed tier derives from that currency
+        server-side, not from the completion cache</b> — so with it removed the progress is inert.
+        <br />
+        <b>Both rows are therefore unreachable from the save.</b> The free row needs a tier currency
+        the server owns and strips on the next sync; the gold row needs the golden ticket, which{" "}
+        <code>libgame.so</code> prices, sells and validates through{" "}
+        <code>ValidatePurchase</code>/<code>ConsumePurchase</code>, reporting{" "}
+        <code>payer_type</code> and <code>inapps_count/sum</code> upward.{" "}
+        <code>LogEventComponent.goldenPassBought</code> reads <code>true</code> on the maxed donor
+        and <code>false</code> here — but it asserts a receipt this account never made, so writing
+        it would be purchase spoofing, which this tool does not do.
+        <br />
+        <b>The research below is real and reusable</b> — the 59-component registry, the 31-stage
+        record shape and the three components that carry pass state are all measured, and are what
+        proved the mechanism closed. The button still runs and still reports honestly; it just does
+        not claim an unlock the game will not keep.
+        <br />
+        Every push backs your save up first.
+      </div>
+
+      <div className="am-row" style={{ margin: "16px 0" }}>
+        <button
+          type="button"
+          className="am-ghost am-ghost--primary"
+          disabled={spRunning || !serial}
+          title={
+            serial
+              ? "Pull the device, write the season-pass progress, push and relaunch. Measured NOT to unlock: the game strips the tier currency."
+              : "Connect a device first"
+          }
+          onClick={() => void unlockSeasonPass()}
+        >
+          {spRunning ? "Writing…" : "Write Golden Pass progress"}
+        </button>
+        {!serial ? <span className="am-hint">no device connected</span> : null}
+      </div>
+
+      {spResult ? (
+        <div
+          className="am-hint"
+          style={{ margin: "6px 0 0", lineHeight: 1.6, fontFamily: "monospace", fontSize: 12 }}
+        >
+          {spResult.ok ? (
+            <>
+              season <b>{spResult.season}</b>
+              {spResult.eventPresent ? null : " · event NOT live on this account"}
+              <br />
+              wrote: {spResult.completedStages} of 31 stages · {spResult.pointsPath} ={" "}
+              <b>{spResult.points}</b>
+              <br />
+              measured: the game deletes {spResult.pointsPath} on the next sync — the pass does
+              not unlock
+              <br />
+              gold row: <b>not unlocked</b> — {spResult.goldRow.reason}
+              <br />
+              {spResult.highlights.map(({ path, before, after }) => (
+                <span key={path} style={{ display: "block" }}>
+                  {path}: {String(before ?? "—")} → <b>{String(after)}</b>
+                </span>
+              ))}
+              <br />
+              pushed · {spResult.bytes.toLocaleString()} bytes · relaunched{" "}
+              {spResult.relaunched ? "yes" : "no"}
+            </>
+          ) : (
+            <>failed: {spResult.pushError ?? "unknown error"}</>
+          )}
+        </div>
+      ) : null}
 
       <AmActions />
     </section>

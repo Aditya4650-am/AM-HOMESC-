@@ -1,3 +1,4 @@
+import { MaxGPPanel } from "./MaxGPPanel.tsx";
 import { useEffect, useMemo, useState } from "react";
 import { AmActions } from "./AmActions.tsx";
 import { AmCheck, AmEmpty, useToast } from "../components/ui.tsx";
@@ -207,6 +208,9 @@ export function HomePassSection() {
     <section className="am-panel">
       <Head title="Home Pass" />
 
+      <MaxGPPanel />
+      <div className="am-label">Legacy pass controls</div>
+
       {stagedKeys.length > 0 ? (
         <div className="am-row" style={{ margin: "12px 0 14px" }}>
           <button
@@ -298,10 +302,8 @@ export function HomePassSection() {
           ) : null}
 
           <div className="am-hint" style={{ margin: "14px 0 4px", lineHeight: 1.5 }}>
-            <b>Honest note on the gold row:</b> tier unlocks, the reward counters and the value
-            package are real local edits and persist in game. What no save edit reaches is the
-            golden padlock itself — that is a real‑money purchase the server validates, so this
-            tool stages the rewards and shows the purchase as the boundary it is.
+            These legacy controls edit the pass cache and local reward values.
+            Use MAX_GP above to update the detected season's Points and Golden Ticket together.
           </div>
         </>
       )}

@@ -12,6 +12,7 @@ import {
   ApiError,
   type AdbInfo,
   type ApplyResponse,
+  type MaxGPResponse,
   type EditOp,
   type OverviewPayload,
 } from "./api.ts";
@@ -70,6 +71,7 @@ interface StudioState {
   /** Apply staged edits to the session. Resolves true when every op landed. */
   applyPending: () => Promise<boolean>;
   applying: boolean;
+  maxGP: () => Promise<MaxGPResponse | null>;
   resetSession: () => Promise<void>;
   reload: () => Promise<void>;
   section: SectionId;
@@ -226,6 +228,30 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }
   }, [pending, sync, toast, pushLog]);
 
+  const maxGP = useCallback(async (): Promise<MaxGPResponse | null> => {
+    if (!overview || applying || connecting || pushing || loading) return null;
+    if (pending.size) {
+      toast.warn("Save staged edits first", "Save or revert your staged edits before MAX_GP.");
+      return null;
+    }
+    setApplying(true);
+    try {
+      const result = await api.maxGP(overview.meta.id);
+      setLastApply(result);
+      await sync();
+      toast.ok("MAX_GP saved", `${result.season} · Points 10,000 · Golden Ticket 1. Press Push to update the game.`);
+      pushLog("ok", "MAX_GP saved", `${result.season}: ${result.changes} field(s) changed`);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.err("MAX_GP failed", message);
+      pushLog("err", "MAX_GP failed", message);
+      return null;
+    } finally {
+      setApplying(false);
+    }
+  }, [overview, applying, connecting, pushing, loading, pending, sync, toast, pushLog]);
+
   const resetSession = useCallback(async () => {
     try {
       await api.reset();
@@ -348,6 +374,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       clearPending,
       applyPending,
       applying,
+      maxGP,
       resetSession,
       reload,
       section,
@@ -377,6 +404,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       clearPending,
       applyPending,
       applying,
+      maxGP,
       resetSession,
       reload,
       section,

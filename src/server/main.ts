@@ -23,6 +23,7 @@ import {
   grantOps,
   openSave,
   planGrants,
+  planSeasonPass,
   readAlbum,
   scanSpans,
   CARD_COUNT,
@@ -32,6 +33,7 @@ import {
   type CosmeticKind,
   type EditOp,
 } from "../engine/index.ts";
+import { MAX_GP } from "../engine/MAX_GP.ts";
 import { asciiTokens, decodeBlkZstd, scanVsoDir, uniqueTokens } from "../engine/upk.ts";
 import {
   SessionError,
@@ -60,7 +62,13 @@ const DIST = join(ROOT, "dist");
 const IGG_SOURCE = join(ROOT, "data", "IGG-account.db");
 const PYTHON = process.env.HC_PYTHON ?? "python";
 const CLIENT = join(ROOT, "client", "hc_client.py");
-const PORT = Number(process.env.HC_PORT ?? 8787);
+const PORT = Number(process.env.PORT ?? process.env.HC_PORT ?? 8787);
+/**
+ * Bind address. Render (and most PaaS) inject `PORT` and require listening on
+ * `0.0.0.0`; a local run keeps the loopback default so the tool is not exposed
+ * on the LAN by accident. `HOST` overrides either.
+ */
+const HOST = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const MAX_BODY = 96 * 1024 * 1024; // base64 inflates by ~4/3
 
 const MIME: Record<string, string> = {
@@ -580,6 +588,131 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
 
+  // Preview and apply MAX_GP to the requested session; pushing stays explicit.
+  if (route === "GET /api/seasonpass/max-gp" || route === "POST /api/seasonpass/max-gp") {
+    const body = req.method === "POST" ? await readJson<{ sessionId?: string }>(req) : null;
+    const sessionId = body?.sessionId ?? url.searchParams.get("sessionId");
+    if (!sessionId) throw new SessionError("`sessionId` is required", 400);
+    const session = resolveSession(sessionId);
+    let plan;
+    try {
+      plan = MAX_GP(session.plain);
+    } catch (error) {
+      throw new SessionError(error instanceof Error ? error.message : String(error), 400);
+    }
+    const detail = {
+      season: plan.season, source: plan.source, points: 10000, prevAmount: 9999,
+      changes: plan.ops.length,
+    };
+    if (req.method === "GET") {
+      sendJson(res, 200, { ok: true, ...detail });
+      return;
+    }
+    const result = session.apply(plan.ops, { refreshIntegrity: false });
+    sendJson(res, result.ok ? 200 : 400, {
+      ...result, bytes: undefined, ...detail,
+      overview: result.ok ? session.overview() : undefined,
+    });
+    return;
+  }
+
+  /* ------------------------------------------------- seasonpass/unlock --
+   * Write the season-pass progress set and push it, in one action.
+   *
+   * MEASURED OUTCOME (2026-10-20, real in-game test on 127.0.0.1:21513): this
+   * does NOT unlock the pass, and the reply says so rather than claiming an
+   * unlock. Read back from the game's own re-saved file after relaunch:
+   *
+   *   * the account was NOT rolled back — level 40, coins 123,456, stars 42,
+   *     13 areas, StepsState 2,603, no "suspicious activity" window;
+   *   * every local field written here SURVIVED untouched (31 stages,
+   *     currProgress=30, currentOpenedStageIndex=31, the log counters);
+   *   * but the game DELETED `Currency.<season>Points`, and the pass rendered
+   *     at stage 1 of 31 with the next stage locked at 0/1.
+   *
+   * So the displayed tier derives from that currency server-side and the
+   * completion cache is inert without it. The first attempt's catastrophic
+   * rollback (level 40 -> gone) is now isolated as a consequence of writing the
+   * currency alone against zero progress — the INCONSISTENCY — not the currency
+   * write itself; with the whole set written together the game removed only the
+   * currency and left the account whole.
+   *
+   * The GOLD row is refused outright: it needs the golden ticket, a real-money
+   * purchase validated through ValidatePurchase/ConsumePurchase. Asserting
+   * `LogEventComponent.goldenPassBought` would be purchase spoofing, so the
+   * reply carries `goldRow.unlocked=false` and the reason.
+   */
+  if (route === "POST /api/seasonpass/unlock") {
+    const body = await readJson<{ serial: string }>(req);
+    if (!body.serial) throw new SessionError("`serial` is required", 400);
+
+    let srcBytes: Uint8Array;
+    try {
+      srcBytes = new Uint8Array(await readFile(IGG_SOURCE));
+    } catch {
+      throw new SessionError(`the built-in account is missing: ${IGG_SOURCE}`, 400);
+    }
+    const donor = createSession("season-pass-source", srcBytes);
+
+    const reply = await callBridge(["pull", "--serial", body.serial]);
+    if (!(reply.ok && reply.b64)) {
+      sendJson(res, 400, { ok: false, error: reply.error ?? "could not read the device save" });
+      return;
+    }
+    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64));
+
+    let plan;
+    try {
+      plan = planSeasonPass(openSave(target.plain), openSave(donor.plain));
+    } catch (err) {
+      sendJson(res, 400, { ok: false, error: (err as Error).message });
+      return;
+    }
+
+    const result = target.apply(plan.ops, { refreshIntegrity: true });
+    if (!result.ok) {
+      sendJson(res, 400, {
+        ok: false,
+        season: plan.season,
+        pointsPath: plan.pointsPath,
+        highlights: plan.highlights,
+        errors: result.errors,
+        warnings: result.warnings,
+      });
+      return;
+    }
+
+    // Push now — this route is the one-tap action, not a staged session.
+    const tmp = join(DIST, "..", ".push-tmp.db");
+    const { writeFile, rm } = await import("node:fs/promises");
+    await writeFile(tmp, Buffer.from(target.exportContainer()));
+    let pushed: any;
+    try {
+      pushed = await callBridge(["push", "--serial", body.serial, "--in", tmp]);
+    } finally {
+      await rm(tmp, { force: true });
+    }
+
+    sendJson(res, pushed?.ok ? 200 : 400, {
+      ok: Boolean(pushed?.ok),
+      season: plan.season,
+      pointsPath: plan.pointsPath,
+      points: plan.points,
+      completedStages: plan.completedStages,
+      goldRow: plan.goldRow,
+      eventPresent: plan.eventPresent,
+      highlights: plan.highlights,
+      stats: plan.stats,
+      notes: plan.notes,
+      bytes: target.overview().meta.plainBytes,
+      relaunched: pushed?.relaunched ?? false,
+      warnings: result.warnings.slice(0, 20),
+      warningsTotal: result.warnings.length,
+      pushError: pushed?.ok ? undefined : pushed?.error,
+    });
+    return;
+  }
+
   if (route === "GET /api/cosmetics/catalog") {
     sendJson(res, 200, { ok: true, groups: COSMETICS });
     return;
@@ -880,6 +1013,6 @@ const server = createServer((req, res) => {
   })();
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  process.stdout.write(`Homescapes Save Studio listening on http://127.0.0.1:${PORT}\n`);
+server.listen(PORT, HOST, () => {
+  process.stdout.write(`Homescapes Save Studio listening on http://${HOST}:${PORT}\n`);
 });

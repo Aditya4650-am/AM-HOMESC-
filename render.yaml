@@ -1,0 +1,17 @@
+# Render Blueprint — Homescapes Save Studio (web service).
+#
+# Render injects PORT; src/server/main.ts listens on 0.0.0.0 whenever PORT is
+# set, so no manual host/port editing is needed. The build produces ./dist,
+# which the same Node process serves alongside /api/*.
+services:
+  - type: web
+    name: homescapes-save-studio
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"

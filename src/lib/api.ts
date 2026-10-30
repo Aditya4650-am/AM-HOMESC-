@@ -121,6 +121,16 @@ export interface ApplyResponse {
   overview?: OverviewPayload;
 }
 
+export interface MaxGPPreview {
+  ok: boolean;
+  season: string;
+  source: string;
+  points: number;
+  prevAmount: number;
+  changes: number;
+}
+export type MaxGPResponse = ApplyResponse & MaxGPPreview;
+
 /** One content root as the clone reported it. */
 export interface CloneContentRoot {
   root: string;
@@ -150,6 +160,39 @@ export interface CloneSourceResponse {
   path: string;
   exists: boolean;
   bytes: number;
+}
+
+/**
+ * Result of writing the season-pass progress set, including every field written.
+ *
+ * `ok` means the write and push succeeded — it does **not** mean the pass
+ * unlocked. Measured 2026-10-20: the local fields survive, but the game deletes
+ * `pointsPath` on the next sync and the pass renders at stage 1 of 31.
+ */
+export interface SeasonPassUnlockResponse {
+  ok: boolean;
+  /** The live season procedure, e.g. `SSPProcedure46`. */
+  season: string;
+  /** `Currency.<season>Points` — the field the stage ladder resolves against. */
+  pointsPath: string;
+  /** Points written: the ladder's own ceiling, not a round number. */
+  points: number;
+  /** Stages marked complete on the free row, e.g. 30 of 31. */
+  completedStages: number;
+  /** The gold row is always refused; carries `unlocked: false` and why. */
+  goldRow: { unlocked: false; reason: string };
+  /** Whether `SpecialEvents.<season>` exists — the window needs it to render. */
+  eventPresent: boolean;
+  /** The headline fields, each with its previous value. */
+  highlights: { path: string; before: unknown; after: unknown }[];
+  /** How the donor's maxed shape was applied. */
+  stats: { sets: number; creates: number; appends: number; skipped: number };
+  notes: string[];
+  bytes: number;
+  relaunched: boolean;
+  warnings: string[];
+  warningsTotal: number;
+  pushError?: string;
 }
 
 export interface CosmeticItem {
@@ -293,6 +336,24 @@ export const api = {
 
   /** Reports the built-in clone source (path + whether the file is present). */
   cloneSource: () => request<CloneSourceResponse>("/api/clone/source"),
+
+  /**
+   * Writes the season-pass progress set and pushes it, in one action.
+   *
+   * Measured 2026-10-20: this does **not** unlock the pass — the game keeps the
+   * local stage state but deletes `pointsPath` (the tier currency) on the next
+   * sync, so the pass renders at stage 1 of 31. The gold row is refused
+   * outright as a real-money purchase. The reply reports exactly that rather
+   * than a bare success, and `before` / `after` carry every field touched.
+   */
+  seasonPassUnlock: (serial: string) =>
+    post<SeasonPassUnlockResponse>("/api/seasonpass/unlock", { serial }),
+
+  maxGPPreview: (sessionId: string) =>
+    request<MaxGPPreview>(`/api/seasonpass/max-gp?sessionId=${encodeURIComponent(sessionId)}`),
+
+  maxGP: (sessionId: string) =>
+    post<MaxGPResponse>("/api/seasonpass/max-gp", { sessionId }),
 
   cosmeticsCatalog: () =>
     request<{ ok: boolean; groups: CosmeticGroupInfo[] }>("/api/cosmetics/catalog").then(
