@@ -12,8 +12,9 @@ import { DecorationsSection } from "../sections/DecorationsSection.tsx";
 import { HomePassSection } from "../sections/HomePassSection.tsx";
 import { FreshStartSection } from "../sections/FreshStartSection.tsx";
 import { HomeCloneSection } from "../sections/HomeCloneSection.tsx";
+import { OwnerSection } from "../sections/OwnerSection.tsx";
+
 import { PetsSection } from "../sections/PetsSection.tsx";
-import { KeysSection } from "../sections/KeysSection.tsx";
 
 /**
  * AM TECH Homescapes Tool — exact recreation of the supplied 1536×1024
@@ -68,7 +69,7 @@ const NAV_LOWER: NavDef[] = [
   { id: "freshstart", label: "Fresh Start", icon: "assets/ui/nav-stats.png" },
   { id: "homeclone", label: "IGG Account", icon: "assets/ui/nav-home.png" },
   { id: "pets", label: "Pets", icon: "assets/ui/nav-badges.png" },
-  { id: "keys", label: "Keys", icon: "assets/ui/nav-homepass.png" },
+  { id: "owner", label: "Owner", icon: "assets/ui/nav-badges.png" },
 ];
 
 interface PillDef {
@@ -491,8 +492,8 @@ function Content() {
       return <HomeCloneSection />;
     case "pets":
       return <PetsSection />;
-    case "keys":
-      return <KeysSection />;
+    case "owner":
+      return <OwnerSection />;
     default:
       return <DashboardSection />;
   }
