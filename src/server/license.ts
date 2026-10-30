@@ -150,22 +150,31 @@ async function getPool(): Promise<PgLike | null> {
   if (pool) return pool;
   // `pg` is a pure-JS driver; imported lazily so a local run without a DB
   // never pays for loading it.
-  const mod = (await import("pg")) as unknown as { default?: { Pool: new (o: unknown) => PgLike }; Pool?: new (o: unknown) => PgLike };
-  const PoolCtor = mod.default?.Pool ?? mod.Pool;
-  if (!PoolCtor) throw new Error("pg driver unavailable — run `npm install`");
-  pool = new PoolCtor({ connectionString: databaseUrl(), ssl: { rejectUnauthorized: false } });
-  await pool.query(`
-    create table if not exists hs_licenses (
-      fp           text primary key,
-      plan         text not null,
-      created_at   bigint not null,
-      expires_at   bigint not null,
-      max_devices  integer not null,
-      devices      jsonb  not null default '[]'::jsonb,
-      active       boolean not null default true,
-      note         text not null default ''
-    )`);
-  return pool;
+  try {
+    const mod = (await import("pg")) as unknown as { default?: { Pool: new (o: unknown) => PgLike }; Pool?: new (o: unknown) => PgLike };
+    const PoolCtor = mod.default?.Pool ?? mod.Pool;
+    if (!PoolCtor) throw new Error("pg driver unavailable — run `npm install`");
+    const p = new PoolCtor({ connectionString: databaseUrl(), ssl: { rejectUnauthorized: false } });
+    await p.query(`
+      create table if not exists hs_licenses (
+        fp           text primary key,
+        plan         text not null,
+        created_at   bigint not null,
+        expires_at   bigint not null,
+        max_devices  integer not null,
+        devices      jsonb  not null default '[]'::jsonb,
+        active       boolean not null default true,
+        note         text not null default ''
+      )`);
+    pool = p;
+    return pool;
+  } catch (err) {
+    // A broken DATABASE_URL must not take the whole tool down: fall back to
+    // the file store and surface the real error in the server log.
+    console.error("[license] Postgres unavailable, falling back to file store:", err instanceof Error ? err.message : String(err));
+    pool = null;
+    return null;
+  }
 }
 
 function loadFile(): Map<string, LicenseRow> {

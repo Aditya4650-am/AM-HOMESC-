@@ -141,14 +141,14 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
             value={key}
             onChange={(e) => setKey(e.target.value.toUpperCase())}
             onKeyDown={(e) => e.key === "Enter" && void activate()}
-            placeholder="HS-XXXXX-XXXXX-XXXXX-XXXXX"
+            placeholder="HS-XXXXX-XXXXX-XXXXX-XXXXX  (or your owner passcode)"
             spellCheck={false}
             autoComplete="off"
             style={{ width: "100%", background: S.input, border: `1px solid ${S.border}`, borderRadius: 10, padding: "10px 12px", fontFamily: "JetBrains Mono, monospace", fontSize: 13, letterSpacing: 1, color: S.fg, outline: "none", boxSizing: "border-box" }}
           />
-          {error ? (
-            <div style={{ marginTop: 10, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.4)", color: S.err, borderRadius: 8, padding: "8px 10px", fontSize: 12 }}>{error}</div>
-          ) : null}
+            <div style={{ marginTop: 6, fontSize: 11, color: S.muted }}>
+              Tip: paste your <b>owner passcode</b> (HS_OWNER value) here to log in as owner.
+            </div>
           <button
             onClick={() => void activate()}
             disabled={busy}
