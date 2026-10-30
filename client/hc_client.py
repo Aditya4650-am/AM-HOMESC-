@@ -529,6 +529,73 @@ def _emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+# -------------------------------------------------------------------- update --
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _latest_release_tag(repo: str) -> str:
+    req = _urlrequest.Request(
+        f"https://api.github.com/repos/{repo}/releases/latest",
+        headers={"User-Agent": "hc-client", "Accept": "application/vnd.github+json"},
+    )
+    with _urlrequest.urlopen(req, timeout=30) as r:
+        body = json.loads(r.read().decode())
+    tag = str(body.get("tag_name") or "")
+    if not tag:
+        raise ClientError("no GitHub release found")
+    return tag
+
+
+def _cmd_update() -> int:
+    """Self-update from a GitHub release zip.
+
+    Env:
+      HC_UPDATE_REPO   - owner/repo to pull from (default the IGG VIP Studio repo)
+      HC_UPDATE_ASSET   - release asset name (default IGG.VIP.TOOL.zip)
+      HC_UPDATE_TAG     - pin a tag (skips the latest-release lookup)
+      HC_UPDATE_SHA256  - expected SHA-256 of the asset; mismatch refuses to swap
+    """
+    repo = os.environ.get("HC_UPDATE_REPO") or "Aditya4650-am/igg-vip-studio"
+    asset = os.environ.get("HC_UPDATE_ASSET") or "IGG.VIP.TOOL.zip"
+    tag = os.environ.get("HC_UPDATE_TAG") or _latest_release_tag(repo)
+    url = f"https://github.com/{repo}/releases/download/{tag}/{asset}"
+    dest = Path(tempfile.gettempdir()) / f"hc_update_{tag}.zip"
+    req = _urlrequest.Request(url, headers={"User-Agent": "hc-client"})
+    with _urlrequest.urlopen(req, timeout=900) as r:
+        dest.write_bytes(r.read())
+    got = _sha256_file(dest)
+    want = (os.environ.get("HC_UPDATE_SHA256") or "").strip().lower()
+    if want and got != want:
+        raise ClientError(f"checksum mismatch: got {got}, want {want}")
+    import zipfile
+
+    with zipfile.ZipFile(dest) as z:
+        names = [n for n in z.namelist() if n.lower().endswith(".exe")]
+        if not names:
+            raise ClientError("no exe inside the release zip")
+        entry = names[0]
+        with z.open(entry) as src, open(dest.with_suffix(".exe"), "wb") as out:
+            out.write(src.read())
+    new_exe = Path(str(dest) + ".exe")
+    # Swap the running process out for the freshly verified one and relaunch.
+    import subprocess as _sp
+
+    _sp.Popen([str(new_exe)] + sys.argv[1:], cwd=str(new_exe.parent))
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+
+
+
+
 # --------------------------------------------------------------------- proxy --
 def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[BaseHTTPRequestHandler]:
     """Reverse proxy for the desktop shell.
@@ -732,6 +799,7 @@ def _cli(argv: list[str]) -> int:
     p_restore.add_argument("--serial", required=True)
 
     sub.add_parser("proxy")
+    sub.add_parser("update")
 
     args = parser.parse_args(argv)
     client = HomescapesClient()
@@ -756,6 +824,9 @@ def _cli(argv: list[str]) -> int:
             port = int(os.environ.get("HC_PROXY_PORT", "8790"))
             upstream = os.environ.get("HC_STUDIO_UPSTREAM", "http://127.0.0.1:8787").rstrip("/")
             _serve_proxy(port, upstream)
+        elif args.cmd == "update":
+            _cmd_update()
+            return 0
         else:  # pragma: no cover - argparse enforces choices
             parser.error(f"unknown command {args.cmd}")
         return 0
