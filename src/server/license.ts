@@ -291,7 +291,7 @@ export async function activate(rawKey: string, deviceId: string): Promise<{ toke
 
   const presented = String(rawKey ?? "").trim();
   const owner = ownerPasscode();
-  if (owner && presented === owner) {
+  if (owner && presented.toLowerCase() === owner.toLowerCase()) {
     const payload: TokenPayload = { fp: fingerprint("OWNER"), dev, exp: Date.now() + TOKEN_TTL_MS, plan: "owner" };
     return {
       token: sealToken(payload),

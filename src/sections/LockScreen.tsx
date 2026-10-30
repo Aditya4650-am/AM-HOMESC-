@@ -56,8 +56,8 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
     try {
       const res = await api.licenseActivate(key.trim(), deviceId);
       setToken(res.token, res.license.plan);
-      toast.ok("Activated", `${res.license.plan} plan${res.license.owner ? " · owner" : ""}`);
       onUnlocked(res.license);
+      try { toast.ok("Unlocked", `${res.license.plan} plan${res.license.owner ? " · owner" : ""}`); } catch { /* toast is cosmetic */ }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
