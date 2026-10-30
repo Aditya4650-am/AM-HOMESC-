@@ -335,6 +335,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       bytes = b64ToBytes(body.b64);
       name = body.name ?? "device save";
     } else if (body.path) {
+      // A hosted deployment must not let a caller name a file on the server's
+      // own disk. Path loads stay available for local runs only.
+      if (process.env.PORT) {
+        throw new SessionError("path loads are disabled on a hosted deployment — upload the file (b64) instead", 400);
+      }
       const full = resolvePath(body.path);
       bytes = new Uint8Array(await readFile(full));
       name = body.name ?? full.split(/[\\/]/).pop() ?? "save";
