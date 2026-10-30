@@ -10,3 +10,5 @@ cycle-state.json
 
 # Local license store (used only when DATABASE_URL is unset)
 data/.hs-licenses.json
+
+client/__pycache__/

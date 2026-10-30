@@ -39,8 +39,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib import parse as _urlparse
+from urllib import request as _urlrequest
 
 APP_NAME = "Homescapes Save Studio"
 APP_VERSION = "0.1.0"
@@ -525,6 +529,183 @@ def _emit(obj: dict) -> None:
     sys.stdout.flush()
 
 
+# --------------------------------------------------------------------- proxy --
+def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[BaseHTTPRequestHandler]:
+    """Reverse proxy for the desktop shell.
+
+    The UI is served from the *studio server*, which may be hosted (Render) where
+    no adb exists. This handler stands in locally: `/api/device/*` and
+    `/api/devices` are answered by the real ADB client, and everything else is
+    forwarded to the upstream studio server — local (`http://127.0.0.1:8787`) or
+    hosted (`https://am-...onrender.com`). That is the same split as the IGG tool:
+    the device stays local, all save logic runs wherever the server lives.
+    """
+
+    class ProxyHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, format, *args):  # noqa: A002 - keep the console quiet
+            return
+
+        # -- plumbing
+        def _body(self) -> bytes:
+            try:
+                n = int(self.headers.get("content-length") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            return self.rfile.read(n) if n > 0 else b""
+
+        def _respond_json(self, status: int, obj) -> None:
+            data = json.dumps(obj, separators=(",", ":")).encode()
+            self.send_response(status)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _upstream(self, method: str, path: str, body: bytes | None, token: str | None):
+            url = upstream_base.rstrip("/") + path
+            req = _urlrequest.Request(url, data=body, method=method)
+            for key, value in self.headers.items():
+                lk = key.lower()
+                if lk in ("content-type", "x-hs-token", "authorization", "x-device-id", "accept", "user-agent"):
+                    req.add_header(key, value)
+            with _urlrequest.urlopen(req, timeout=300) as resp:
+                return resp.status, resp.read()
+
+        # -- dispatch
+        def _dispatch(self) -> None:
+            path = self.path.split("?", 1)[0]
+            token = self.headers.get("x-hs-token") or None
+
+            if self.command == "GET" and path == "/api/devices":
+                try:
+                    info = client.adb_info()
+                    self._respond_json(200, {"ok": True, **info})
+                except ClientError as exc:
+                    self._respond_json(400, {"ok": False, "error": str(exc)})
+                return
+
+            if self.command == "POST" and path == "/api/device/pull":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                if not serial:
+                    self._respond_json(400, {"ok": False, "error": "`serial` is required"})
+                    return
+                try:
+                    reply = client.pull(serial)
+                    self._respond_json(200, {"ok": True, **reply})
+                except ClientError as exc:
+                    self._respond_json(400, {"ok": False, "error": str(exc)})
+                return
+
+            if self.command == "POST" and path == "/api/device/push":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                restart = payload.get("restart") is not False
+                if not serial:
+                    self._respond_json(400, {"ok": False, "error": "`serial` is required"})
+                    return
+                sid = str(payload.get("sessionId") or "")
+                status, data = self._upstream(
+                    "GET", f"/api/export?sessionId={_urlparse.quote(sid)}", None, token
+                )
+                if status != 200:
+                    try:
+                        self._respond_json(status, json.loads(data.decode() or "{}"))
+                    except Exception:
+                        self.send_response(status)
+                        self.send_header("content-type", "application/json")
+                        self.send_header("content-length", "0")
+                        self.end_headers()
+                    return
+                try:
+                    reply = client.push(serial, data, restart=restart)
+                    self._respond_json(200, reply)
+                except ClientError as exc:
+                    self._respond_json(400, {"ok": False, "error": str(exc)})
+                return
+
+            if self.command == "POST" and path == "/api/device/stop":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                reply = client.force_stop(serial) if serial else {"ok": False, "error": "`serial` is required"}
+                self._respond_json(200, {"ok": True, **reply})
+                return
+
+            if self.command == "POST" and path == "/api/device/start":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                reply = client.start(serial) if serial else {"ok": False, "error": "`serial` is required"}
+                self._respond_json(200, {"ok": True, **reply})
+                return
+
+            if self.command == "POST" and path == "/api/device/restore-backup":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                reply = client.restore_backup(serial) if serial else {"ok": False, "error": "`serial` is required"}
+                self._respond_json(200, {"ok": True, **reply})
+                return
+
+            status, data = self._upstream(self.command, self.path, self._body() or None, token)
+            self.send_response(status)
+            ct = self.headers.get("content-type") or "application/json"
+            if "json" in ct:
+                ct = "application/json"
+            self.send_header("content-type", ct)
+            self.send_header("content-length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self._dispatch()
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._dispatch()
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._dispatch()
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._dispatch()
+
+    return ProxyHandler
+
+
+def _serve_proxy(port: int, upstream_base: str) -> ThreadingHTTPServer:
+    handler = _make_proxy_handler(HomescapesClient(), upstream_base)
+    server = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    server.daemon_threads = True
+
+    def _run() -> None:
+        server.serve_forever()
+        try:
+            server.server_close()
+        except Exception:
+            pass
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    print(f"[hc_client] proxy listening on http://127.0.0.1:{port} -> {upstream_base}", flush=True)
+    thread.join()
+    return server
+
+
 def _cli(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="hc_client", add_help=True)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -550,6 +731,8 @@ def _cli(argv: list[str]) -> int:
     p_restore = sub.add_parser("restore-backup")
     p_restore.add_argument("--serial", required=True)
 
+    sub.add_parser("proxy")
+
     args = parser.parse_args(argv)
     client = HomescapesClient()
 
@@ -569,6 +752,10 @@ def _cli(argv: list[str]) -> int:
             _emit(client.start(args.serial))
         elif args.cmd == "restore-backup":
             _emit(client.restore_backup(args.serial))
+        elif args.cmd == "proxy":
+            port = int(os.environ.get("HC_PROXY_PORT", "8790"))
+            upstream = os.environ.get("HC_STUDIO_UPSTREAM", "http://127.0.0.1:8787").rstrip("/")
+            _serve_proxy(port, upstream)
         else:  # pragma: no cover - argparse enforces choices
             parser.error(f"unknown command {args.cmd}")
         return 0
