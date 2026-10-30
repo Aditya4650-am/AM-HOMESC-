@@ -46,7 +46,8 @@ export type SectionId =
   | "pets"
   | "freshstart"
   | "homeclone"
-  | "review";
+  | "review"
+  | "keys";
 
 /** One line in the sidebar activity log. */
 export interface LogEntry {
