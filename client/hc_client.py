@@ -48,6 +48,88 @@ from urllib import request as _urlrequest
 
 APP_NAME = "Homescapes Save Studio"
 APP_VERSION = "0.1.0"
+DEFAULT_SERVER_URL = "https://am-homesc-v3bt.onrender.com"
+
+_ALPH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_DEVICE_ID_RE = re.compile(r"^HSD(?:-[A-Z0-9]{4}){5}$")
+
+def _mint_device_id() -> str:
+    raw = os.urandom(20)
+    chars = [_ALPH[b % len(_ALPH)] for b in raw]
+    return "HSD-" + "-".join("".join(chars[i:i + 4]) for i in range(0, 20, 4))
+
+def _app_data_dir() -> Path:
+    base = os.environ.get("APPDATA") or str(Path.home())
+    return Path(base) / "Homescapes-Save-Studio"
+
+def get_device_id() -> str:
+    p = _app_data_dir() / "device.id"
+    try:
+        existing = p.read_text(encoding="utf-8").strip().upper()
+        if _DEVICE_ID_RE.match(existing):
+            return existing
+    except Exception:
+        pass
+    new_id = _mint_device_id()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(new_id, encoding="utf-8")
+    except Exception:
+        pass
+    return new_id
+
+def resolve_server_url() -> str:
+    env = (os.environ.get("HC_STUDIO_URL") or "").strip()
+    if env:
+        return env.rstrip("/")
+    try:
+        txt = (_app_data_dir() / "server.txt").read_text(encoding="utf-8").strip()
+        if txt:
+            return txt.rstrip("/")
+    except Exception:
+        pass
+    return DEFAULT_SERVER_URL
+
+def normalize_base_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return DEFAULT_SERVER_URL
+    if "://" not in raw:
+        raw = "https://" + raw
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+        u = urlsplit(raw)
+    except ValueError:
+        return DEFAULT_SERVER_URL
+    host = u.hostname or ""
+    if u.scheme not in ("http", "https") or not host:
+        return DEFAULT_SERVER_URL
+    return urlunsplit((u.scheme, u.netloc, "", "", ""))
+
+def with_device_param(url: str, device_id: str) -> str:
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}did={device_id}"
+
+# pywebview exposes the api object as window.pywebview.api.*. The web app looks
+# for window.hcNative.*, so we alias it as soon as the bridge is ready.
+_ALIAS_JS = """
+(function () {
+  function install() {
+    try {
+      if (window.pywebview && window.pywebview.api && !window.hcNative) {
+        window.hcNative = window.pywebview.api;
+        window.dispatchEvent(new Event('hc-native-ready'));
+      }
+    } catch (e) {}
+  }
+  install();
+  var n = 0;
+  var t = setInterval(function () {
+    install();
+    if ((window.hcNative) || ++n > 50) clearInterval(t);
+  }, 100);
+})();
+"""
 
 # Homescapes ships as a single global package; the `.vn` variant follows the
 # same layout if it ever appears.
@@ -434,8 +516,16 @@ class HomescapesClient:
             + ". Check that the device is rooted and open Homescapes at least once."
         )
 
-    def push(self, serial: str, data: bytes, restart: bool = True) -> dict:
-        """Write an edited save back, keeping both a game and a tool backup."""
+    def push(self, serial: str, data, restart: bool = True, **kwargs) -> dict:
+        """Write an edited save back. Accepts base64 (igg-style) or raw bytes."""
+        if isinstance(data, (bytes, bytearray)):
+            _data = bytes(data)
+        else:
+            try:
+                _data = base64.b64decode(str(data), validate=False)
+            except Exception:
+                _data = str(data).encode()
+        data = _data
         adb = _find_adb()
         if not adb:
             raise ClientError("adb not found - connect an emulator first")
@@ -841,7 +931,7 @@ def _cli(argv: list[str]) -> int:
 # ── desktop shell ────────────────────────────────────────────────────────────
 
 def _serve_window() -> int:
-    """Open a native WebView2 window over the local studio server."""
+    """Open a native WebView2 window over the studio server."""
     try:
         import webview  # pywebview
     except ImportError:
@@ -852,7 +942,8 @@ def _serve_window() -> int:
         )
         return 2
 
-    url = os.environ.get("HC_STUDIO_URL", "http://127.0.0.1:8787")
+    device_id = get_device_id() if 'get_device_id' in globals() else ""
+    url = with_device_param(normalize_base_url(resolve_server_url()), device_id)
     window = webview.create_window(
         APP_NAME,
         url,
@@ -863,7 +954,12 @@ def _serve_window() -> int:
     )
     # Expose the bridge so the UI can drive ADB without an HTTP hop.
     window.expose(HomescapesClient())
-    webview.start(debug=bool(os.environ.get("HC_DEBUG")))
+    webview.start(debug=bool(os.environ.get("HC_DEBUG")), js_api=True)
+    # Inject the alias so window.hcNative is available.
+    try:
+        window.evaluate_js(_ALIAS_JS)
+    except Exception:
+        pass
     return 0
 
 

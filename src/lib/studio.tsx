@@ -10,6 +10,7 @@ import {
 import {
   api,
   ApiError,
+  downloadSave,
   type AdbInfo,
   type ApplyResponse,
   type MaxGPResponse,
@@ -103,6 +104,18 @@ interface StudioState {
 const Ctx = createContext<StudioState | null>(null);
 
 let logSeq = 0;
+
+// Native bridge — available when running inside the desktop EXE (pywebview).
+// When present, ADB operations happen locally; otherwise we fall back to the
+// server-side HTTP API (works only when the server can reach adb).
+function nativeBridge(): {
+  devices: () => Promise<{ id: string; label: string }[]>;
+  pull: (serial: string) => Promise<{ ok: boolean; b64: string; file: string; package: string }>;
+  push: (serial: string, b64: string, options?: { restart?: boolean }) => Promise<{ ok: boolean; error?: string; toolBackup?: string }>;
+  version: () => string;
+} | undefined {
+  return (window as unknown as { hcNative?: any }).hcNative;
+}
 
 export function useStudio(): StudioState {
   const ctx = useContext(Ctx);
@@ -276,9 +289,16 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const refreshDevices = useCallback(async () => {
     setDevicesLoading(true);
     try {
-      const info = await api.devices();
-      setDevices(info);
-      if (info.devices.length > 0 && !serial) setSerial(info.devices[0]!.id);
+      const native = nativeBridge();
+      if (native) {
+        const list = await native.devices();
+        setDevices({ found: list.length > 0, path: "native", devices: list, message: list.length > 0 ? "ok" : "no device connected" });
+        if (list.length > 0 && !serial) setSerial(list[0]!.id);
+      } else {
+        const info = await api.devices();
+        setDevices(info);
+        if (info.devices.length > 0 && !serial) setSerial(info.devices[0]!.id);
+      }
     } catch (err) {
       setDevices({ found: false, path: "", devices: [], message: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -298,34 +318,48 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }
     setConnecting(true);
     try {
-      const res = await api.pull(serial);
-      setDeviceSerial(serial);
-      setPendingMap(new Map());
-      await sync();
-
-      // Identify WHOSE game we just read, so the user can see it is the right one.
+      const native = nativeBridge();
       let who = "";
-      try {
-        const [n, l] = await Promise.all([
-          api.field("Properties.name").catch(() => null),
-          api
-            .field("Properties.LID_Lvl")
-            .catch(() => api.field("Properties.level"))
-            .catch(() => null),
-        ]);
-        const nm = typeof n?.value === "string" && n.value ? n.value : "";
-        const lv = typeof l?.value === "number" ? l.value : null;
-        who = nm ? `${nm}${lv !== null ? ` · level ${lv}` : ""}` : "";
-      } catch {
-        /* the name is a nicety, never a blocker */
+      if (native) {
+        // Desktop EXE path: pull via native bridge (local ADB).
+        const pulled = await native.pull(serial);
+        if (!pulled.ok) throw new Error((pulled as any).error ?? "pull failed");
+        const session = await api.uploadSave(`device:${serial}`, pulled.b64);
+        setDeviceSerial(serial);
+        setPendingMap(new Map());
+        await sync();
+        // Identify whose game we just read.
+        try {
+          const [n, l] = await Promise.all([
+            api.field("Properties.name").catch(() => null),
+            api.field("Properties.LID_Lvl").catch(() => api.field("Properties.level")).catch(() => null),
+          ]);
+          const nm = typeof n?.value === "string" && n.value ? n.value : "";
+          const lv = typeof l?.value === "number" ? l.value : null;
+          who = nm ? `${nm}${lv !== null ? ` · level ${lv}` : ""}` : "";
+        } catch { /* nicety */ }
+        const fields = session?.meta?.fieldCount;
+        toast.ok(who ? `Connected — ${who}` : "Connected", fields ? `${fields.toLocaleString("en-US")} fields read from ${serial}` : serial);
+        pushLog("ok", who ? `Connected — ${who}` : "Connected to device", serial);
+      } else {
+        // Browser / server-side path.
+        const res = await api.pull(serial);
+        setDeviceSerial(serial);
+        setPendingMap(new Map());
+        await sync();
+        try {
+          const [n, l] = await Promise.all([
+            api.field("Properties.name").catch(() => null),
+            api.field("Properties.LID_Lvl").catch(() => api.field("Properties.level")).catch(() => null),
+          ]);
+          const nm = typeof n?.value === "string" && n.value ? n.value : "";
+          const lv = typeof l?.value === "number" ? l.value : null;
+          who = nm ? `${nm}${lv !== null ? ` · level ${lv}` : ""}` : "";
+        } catch { /* nicety */ }
+        const fields = res.overview?.meta?.fieldCount;
+        toast.ok(who ? `Connected — ${who}` : "Connected", fields ? `${fields.toLocaleString("en-US")} fields read from ${serial}` : serial);
+        pushLog("ok", who ? `Connected — ${who}` : "Connected to device", serial);
       }
-
-      const fields = res.overview?.meta?.fieldCount;
-      toast.ok(
-        who ? `Connected — ${who}` : "Connected",
-        fields ? `${fields.toLocaleString("en-US")} fields read from ${serial}` : serial,
-      );
-      pushLog("ok", who ? `Connected — ${who}` : "Connected to device", serial);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.err("Connect failed", msg);
@@ -353,15 +387,31 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }
     setPushing(true);
     try {
-      // Push the EXACT session the edits were applied to. Without this the
-      // server falls back to its newest session, and a pull/clone/reset run
-      // after the last sync silently rotates that — apply would report
-      // success on one session while the bytes pushed came from another,
-      // losing every staged edit with no error shown anywhere.
-      const res = await api.push(serial, true, overview?.meta.id);
-      if (res.error) throw new Error(res.error);
-      toast.ok("Pushed — game is opening", res.toolBackup ? `auto-backup: ${res.toolBackup}` : serial);
-      pushLog("ok", "Save pushed + game relaunched", res.toolBackup ?? serial);
+      const native = nativeBridge();
+      if (native) {
+        // Desktop EXE path: export session bytes, push via native bridge.
+        const sessionId = overview?.meta.id;
+        const blob = await downloadSave(sessionId);
+        const buf = await blob.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        // Convert to base64 for the native bridge (matches igg tool's push signature).
+        let b64 = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          b64 += String.fromCharCode(...bytes.subarray(i, i + chunk));
+        }
+        b64 = btoa(b64);
+        const res = await native.push(serial, b64, { restart: true });
+        if ((res as any).error) throw new Error((res as any).error);
+        toast.ok("Pushed — game is opening", res.toolBackup ? `auto-backup: ${res.toolBackup}` : serial);
+        pushLog("ok", "Save pushed + game relaunched", res.toolBackup ?? serial);
+      } else {
+        // Browser / server-side path.
+        const res = await api.push(serial, true, overview?.meta.id);
+        if (res.error) throw new Error(res.error);
+        toast.ok("Pushed — game is opening", res.toolBackup ? `auto-backup: ${res.toolBackup}` : serial);
+        pushLog("ok", "Save pushed + game relaunched", res.toolBackup ?? serial);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.err("Push failed", msg);
