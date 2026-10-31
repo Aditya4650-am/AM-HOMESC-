@@ -173,7 +173,7 @@ async function main() {
     }
 
     // ---- 5. the header must offer the three ways a job starts
-    for (const control of ["Open save", "Connect", "Push & Launch"]) {
+    for (const control of ["Connect", "Push & Launch"]) {
       const found = [...window.document.querySelectorAll("button")].some((b) =>
         (b.textContent ?? "").includes(control),
       );

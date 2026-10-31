@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { StudioProvider, useStudio, type SectionId } from "../lib/studio.tsx";
 import { ToastProvider, AmEmpty, useToast } from "./ui.tsx";
 import { LockScreen } from "../sections/LockScreen.tsx";
@@ -159,13 +159,10 @@ function Shell({ owner }: { owner: boolean }) {
     deviceSerial,
     connect,
     connecting,
-    openSaveFile,
-    openingFile,
     push,
     pushing,
   } = useStudio();
   const [win, setWin] = useState<WinState>("max");
-  const fileInput = useRef<HTMLInputElement>(null);
   const toast = useToast();
 
   useEffect(() => {
@@ -272,32 +269,6 @@ function Shell({ owner }: { owner: boolean }) {
           </div>
 
           <div className="am-tb-right am-tb-right--tools">
-            {/*
-              Open a save straight from this machine. Without this a hosted
-              deployment was unusable: ADB is not reachable from a container, so
-              "Connect" could never succeed and no file could be chosen.
-            */}
-            <input
-              ref={fileInput}
-              type="file"
-              accept=".db,.hscbak,.bak,.bin,application/octet-stream"
-              style={{ display: "none" }}
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) void openSaveFile(file);
-              }}
-            />
-            <button
-              type="button"
-              className="am-ghost"
-              onClick={() => fileInput.current?.click()}
-              disabled={openingFile}
-              title="Open a SaveGame.db from this computer"
-            >
-              {openingFile ? "Opening…" : "Open save"}
-            </button>
-
             <select
               className="am-select am-select--device"
               value={serial ?? ""}
