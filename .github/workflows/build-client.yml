@@ -29,10 +29,41 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip pyinstaller pywebview
 
+      - name: Bundle ADB (so Connect works on a clean client PC)
+        # A client installs the EXE and nothing else. Without platform-tools
+        # beside it `_find_adb()` has to guess an emulator path and Connect
+        # fails on a machine that never installed the Android SDK. Google's
+        # official zip is not redistributable from this repo, so it is fetched
+        # here and packed into the build instead of being committed.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip'
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\platform-tools.zip" -UseBasicParsing
+          Expand-Archive -Path "$env:RUNNER_TEMP\platform-tools.zip" -DestinationPath "$env:RUNNER_TEMP\pt" -Force
+          New-Item -ItemType Directory -Force -Path 'client/adb' | Out-Null
+          foreach ($f in @('adb.exe','AdbWinApi.dll','AdbWinUsbApi.dll')) {
+            Copy-Item "$env:RUNNER_TEMP\pt\platform-tools\$f" -Destination 'client/adb' -Force
+          }
+          & 'client/adb/adb.exe' version
+          Get-ChildItem 'client/adb' | Select-Object Name,Length
+
       - name: Build EXE (PyInstaller onedir)
         run: |
           cd client
           python -m PyInstaller --clean --noconfirm homescapes_client.spec
+
+      - name: Verify ADB actually shipped inside the build
+        shell: pwsh
+        run: |
+          $bundled = 'client/dist/Homescapes Save Studio/_internal/adb/adb.exe'
+          if (-not (Test-Path $bundled)) {
+            $hit = Get-ChildItem -Path 'client/dist/Homescapes Save Studio' -Recurse -Filter 'adb.exe' | Select-Object -First 1
+            if (-not $hit) { throw 'adb.exe is not in the packaged build - Connect would fail on a clean PC' }
+            $bundled = $hit.FullName
+          }
+          Write-Host "bundled adb: $bundled"
+          & $bundled version
 
       - name: Verify GUI subsystem
         shell: pwsh

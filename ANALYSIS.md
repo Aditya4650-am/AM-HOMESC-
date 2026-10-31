@@ -433,11 +433,13 @@ Each item names the fix and how it is now proven. `npm run verify` runs the whol
 
 ### One gap found while fixing: there was no way to open a save from disk
 
-The README claimed "Open save" works in the cloud, but no file input existed anywhere — on a
-hosted deployment (no ADB) the tool could not be used at all. Added `openSaveFile()` to the
-studio store, an **Open save** button in the title bar (chunked base64, so a 4 MB binary does
-not blow `btoa`), and a first-run call to action on the Dashboard. The UI smoke test now also
-asserts the three job-start controls (`Open save`, `Connect`, `Push & Launch`) exist.
+**Reverted at the owner's request (scope creep, not a fix).** While fixing the above I added an
+**Open save** toolbar button (file picker → chunked base64 → `POST /api/session/load`) because a
+hosted deployment has no ADB. That was a *new feature*, not a repair, so it has been removed:
+the button, the hidden file input, `openSaveFile()`/`openingFile` in the studio store, the
+`Open save` assertion in `tools/ui_smoke.mjs`, and the README claim. The server-side `b64`
+branch of `/api/session/load` stays — the **Connect** flow has always used it for pulled saves.
+Net effect: the feature set is exactly the original one (Connect → edit → Push & Launch).
 
 ### Still open (deliberately)
 

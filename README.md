@@ -109,8 +109,8 @@ Generate the master key, never invent it — changing `HS_MASTER` invalidates ev
 
 ### Hosted vs local
 
-**Works in the cloud:** license login, **Open save** (pick a `SaveGame.db` — this is how a save
-enters a hosted deployment), every edit, cards, cosmetics, MAX_GP, review, export.
+**Works in the cloud:** license login, every edit, cards, cosmetics, MAX_GP, review, export.
+A save enters a session through **Connect** (device) — see the local-proxy note below.
 
 **Needs a local machine:** `/api/device/*` and `/api/clone-content` shell out to
 `client/hc_client.py` + `adb` against a connected device, which a container cannot reach. The

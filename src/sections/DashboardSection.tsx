@@ -271,7 +271,7 @@ export function DashboardSection() {
         <Head title="Game Statistics" />
         <AmEmpty
           title="No save loaded"
-          detail="Press Connect in the title bar to read a client's live game over ADB, or press Open save to load a SaveGame.db from this computer. Everything on every tab is that account's real data."
+          detail="Press Connect in the title bar to read a client's live game over ADB. Everything on every tab is that account's real data."
         />
       </section>
     );
