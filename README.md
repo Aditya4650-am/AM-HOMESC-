@@ -91,3 +91,13 @@ no device there by design — use **Open save**, edit, then **Export** and push 
 file from a local run. Sessions live in memory, so a free-plan
 spin-down ends any open session.
 
+**Why a Push might not show in-game (honest scope note):** a Push stops the game,
+writes the edited save bytes over `SaveGame.db` via ADB and relaunches it. The tool
+stages and writes save bytes; the game's own launch-time cloud re-sync (account
+server reconciliation) is outside a save editor's control and may overwrite local
+progression after the write. Frames/styles/badges/decorations you grant are staged
+into the save before the push, so they survive — but if anything still does not
+appear, force-stop the game fully (the client does), relaunch, and pull the save
+again before re-pushing. True cloud-resync surgery (Playrix identity/device state)
+is deliberately not performed by this tool.
+
