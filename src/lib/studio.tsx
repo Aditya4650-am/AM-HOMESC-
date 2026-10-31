@@ -212,7 +212,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     setApplying(true);
     try {
       const ops: EditOp[] = [...pending].map(([path, value]) => ({ path, value }));
-      const res: ApplyResponse = await api.apply(ops, true);
+      const res: ApplyResponse = await api.apply(ops, true, overview?.meta.id);
       setLastApply(res);
       if (!res.ok) {
         toast.err("Edit refused", res.errors.join("\n"));
@@ -248,7 +248,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     } finally {
       setApplying(false);
     }
-  }, [pending, sync, toast, pushLog]);
+  }, [pending, overview, sync, toast, pushLog]);
 
   const maxGP = useCallback(async (): Promise<MaxGPResponse | null> => {
     if (!overview || applying || connecting || pushing || loading) return null;
