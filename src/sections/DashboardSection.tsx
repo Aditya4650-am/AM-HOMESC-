@@ -270,8 +270,8 @@ export function DashboardSection() {
       <section className="am-panel">
         <Head title="Game Statistics" />
         <AmEmpty
-          title="No client loaded"
-          detail="Press Connect in the title bar to read a client's live game — the stats shown here are that client's real profile."
+          title="No save loaded"
+          detail="Press Connect in the title bar to read a client's live game over ADB, or press Open save to load a SaveGame.db from this computer. Everything on every tab is that account's real data."
         />
       </section>
     );

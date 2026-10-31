@@ -15,7 +15,9 @@
     "test": "node --experimental-strip-types --test src/engine/*.test.ts",
     "season-ticket": "node --experimental-strip-types tools/edit_season_ticket.ts",
     "preview": "vite preview",
-    "start": "node --experimental-strip-types src/server/main.ts"
+    "start": "node --experimental-strip-types src/server/main.ts",
+    "test:ui": "node tools/ui_smoke.mjs",
+    "verify": "npm run typecheck && npm test && npm run test:ui && npm run build"
   },
   "dependencies": {
     "pg": "^8.23.1",
@@ -29,6 +31,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^30.1.3",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.7.0",
     "vite": "^7.1.0"

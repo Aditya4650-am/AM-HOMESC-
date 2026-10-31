@@ -17,6 +17,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify the web app still builds and passes its tests
+        # The EXE only wraps the UI, so a broken bundle or a broken engine would
+        # ship inside a green release. Check before packaging.
+        run: |
+          npm ci --include=dev
+          npm run typecheck
+          npm test
+          npm run build
+
       - name: Install dependencies
         run: python -m pip install --upgrade pip pyinstaller pywebview
 
@@ -39,7 +48,16 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path 'client/dist/Homescapes Save Studio' -DestinationPath 'client/dist/HOMESC.SAVE.STUDIO.zip' -Force
-          Get-FileHash 'client/dist/HOMESC.SAVE.STUDIO.zip' -Algorithm SHA256
+
+      - name: Publish SHA-256 next to the asset
+        # `hc update` refuses to replace the running EXE without this file, so it
+        # has to be produced by the same job that builds the zip.
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash 'client/dist/HOMESC.SAVE.STUDIO.zip' -Algorithm SHA256).Hash.ToLower()
+          Write-Host "sha256: $hash"
+          "$hash  HOMESC.SAVE.STUDIO.zip" | Out-File -Encoding ascii 'client/dist/HOMESC.SAVE.STUDIO.zip.sha256'
+          Get-Content 'client/dist/HOMESC.SAVE.STUDIO.zip.sha256'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -51,4 +69,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: client/dist/HOMESC.SAVE.STUDIO.zip
+          files: |
+            client/dist/HOMESC.SAVE.STUDIO.zip
+            client/dist/HOMESC.SAVE.STUDIO.zip.sha256

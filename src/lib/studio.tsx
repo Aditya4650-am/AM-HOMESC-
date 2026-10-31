@@ -93,6 +93,13 @@ interface StudioState {
    */
   connect: () => Promise<void>;
   connecting: boolean;
+  /**
+   * Open a `SaveGame.db` from this machine. This is how a save enters a HOSTED
+   * deployment (a container has no ADB), and it is also the fastest path for a
+   * client who already has a pulled save.
+   */
+  openSaveFile: (file: File) => Promise<void>;
+  openingFile: boolean;
   /** Write the session back to the device and relaunch the game. */
   push: () => Promise<void>;
   pushing: boolean;
@@ -138,6 +145,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   const [serial, setSerial] = useState<string | null>(null);
   const [deviceSerial, setDeviceSerial] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [openingFile, setOpeningFile] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [log, setLog] = useState<LogEntry[]>([]);
 
@@ -307,6 +315,45 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   }, [serial]);
 
   /**
+   * OPEN SAVE — load a file from disk into the server session.
+   *
+   * Read as an ArrayBuffer and base64-encoded in chunks: `btoa` on a 4.3 MB
+   * binary through one spread would blow the argument limit, and a UTF-8 text
+   * decode would corrupt the XOR-wrapped containers.
+   */
+  const openSaveFile = useCallback(
+    async (file: File) => {
+      setOpeningFile(true);
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let b64 = "";
+        const chunk = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunk) {
+          b64 += String.fromCharCode(...bytes.subarray(i, i + chunk));
+        }
+        b64 = btoa(b64);
+        const overviewNext = await api.uploadSave(file.name, b64);
+        setDeviceSerial(null);
+        setPendingMap(new Map());
+        await sync();
+        const fields = overviewNext?.meta?.fieldCount;
+        toast.ok(
+          "Save opened",
+          `${file.name}${fields ? ` · ${fields.toLocaleString("en-US")} fields` : ""}`,
+        );
+        pushLog("ok", `Opened ${file.name}`, overviewNext?.meta?.containerKind);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.err("Could not open that file", msg);
+        pushLog("err", "Open save failed", msg);
+      } finally {
+        setOpeningFile(false);
+      }
+    },
+    [sync, toast, pushLog],
+  );
+
+  /**
    * CONNECT — the one button that matters. Reads the client's live save off the
    * selected device and makes it the session every tab edits, exactly like the
    * main IGG tool. No file paths, no manual imports.
@@ -447,6 +494,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       setDeviceSerial,
       connect,
       connecting,
+      openSaveFile,
+      openingFile,
       push,
       pushing,
       log,
@@ -474,6 +523,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       deviceSerial,
       connect,
       connecting,
+      openSaveFile,
+      openingFile,
       push,
       pushing,
       log,
