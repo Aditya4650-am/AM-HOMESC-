@@ -17,7 +17,7 @@ import {
   PatchError,
   toBytes,
 } from "./patcher.ts";
-import { decodeSave, encodeSave, describeContainer, wrapSave } from "./codec.ts";
+import { decodeSave, encodeSave, describeContainer, wrapSave, withEmptyValuesAsNull } from "./codec.ts";
 import { openSave, SaveError, type SaveGame } from "./savegame.ts";
 import {
   BOOSTER_PATHS,
@@ -283,6 +283,26 @@ test(
     const outText = new TextDecoder().decode(bytes);
     assert.equal(outText.startsWith(new TextDecoder().decode(before)), true);
     assert.equal(outText.endsWith(new TextDecoder().decode(after)), true);
+  },
+);
+
+test(
+  "save: edits a save that carries a Playrix empty-value member, and the patch stays valid",
+  { skip: haveFixture ? false : `fixture not found at ${FIXTURE}` },
+  () => {
+    // Playrix writes datastore members it holds without a value as an empty
+    // member: `"Currency."SSPProcedure46Points":,`. Its own parser reads that
+    // as null; JSON.parse does not — so commit() must tolerate the source save
+    // carrying it rather than refusing every edit.
+    const raw = toBytes(
+      '{"Properties":{"coins":5},"Currency":{"ExpeditionTickets.amount":100,"SSPProcedure46Points":,"SSPSpooky48Points.amount":845}}',
+    );
+    const save = openSave(raw);
+    save.set("Properties.coins", 999999999);
+    const { bytes, summary } = save.commit();
+    assert.equal(summary.length, 1);
+    const doc = JSON.parse(withEmptyValuesAsNull(new TextDecoder().decode(bytes)));
+    assert.equal(doc.Properties.coins, 999999999);
   },
 );
 

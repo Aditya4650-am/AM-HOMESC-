@@ -231,9 +231,17 @@ function parsesAsUtf8Json(b: Uint8Array): boolean {
  * holds without a value; its own parser reads that as null. `JSON.parse`
  * refuses it, so key recovery would reject a perfectly good candidate decode.
  * Rewrite only for VALIDATION — the bytes we keep are never touched.
+ *
+ * The delimiter that closes the (empty) value is consumed by the pattern and
+ * re-emitted, so `"key":,` becomes `"key":null,`.
  */
-function withEmptyValuesAsNull(text: string): string {
-  return text.replace(/:\s*(?=[,}\]])/g, ":null");
+export function withEmptyValuesAsNull(text: string): string {
+  return text.replace(/:\s*([,}\]])/g, ":null$1");
+}
+
+/** How many Playrix empty-value members this text carries (for validation). */
+export function countEmptyValues(text: string): number {
+  return (text.match(/:\s*(?=[,}\]])/g) ?? []).length;
 }
 
 /** Decode a possibly-wrapped save into plain JSON bytes. */

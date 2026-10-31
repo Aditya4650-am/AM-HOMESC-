@@ -16,6 +16,7 @@
  */
 
 import { scanSpans, valueText, type MemberSpan, type SpanIndex } from "./json-span.ts";
+import { countEmptyValues, withEmptyValuesAsNull } from "./codec.ts";
 import {
   applyEdits,
   encodeJsonNumber,
@@ -491,17 +492,33 @@ export class SaveGame {
     if (edits.length === 0) return { bytes: this.raw, summary: [] };
 
     const { out, summary } = applyEdits(this.raw, edits);
-    assertStillJson(out);
+    assertStillJson(out, this.raw);
     this.#edits = [];
     return { bytes: out, summary };
   }
 }
 
-function assertStillJson(buf: Uint8Array): void {
+function assertStillJson(buf: Uint8Array, source: Uint8Array): void {
   const text = fromBytes(buf);
   try {
     JSON.parse(text);
+    return;
   } catch (err) {
+    // Playrix writes a datastore it holds without a value as `"key":,` (or
+    // `"key":}`); its own parser reads that as null, but `JSON.parse` refuses
+    // it. Without this tolerance a save containing one — the level-45 backup
+    // carries `Currency."SSPProcedure46Points":,` — would reject EVERY edit.
+    // Accept the malformed shape only when the SOURCE save already carried
+    // exactly as many, so a patch can never introduce a new broken member.
+    const before = countEmptyValues(fromBytes(source));
+    if (before > 0 && countEmptyValues(text) === before) {
+      try {
+        JSON.parse(withEmptyValuesAsNull(text));
+        return;
+      } catch {
+        /* fall through to the original error */
+      }
+    }
     throw new SaveError(`patch produced invalid JSON: ${(err as Error).message}`);
   }
 }

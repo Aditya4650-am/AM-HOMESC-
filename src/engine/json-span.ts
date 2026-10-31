@@ -163,8 +163,11 @@ export function scanSpans(raw: Uint8Array): SpanIndex {
       if (raw[j] === CLOSE_BRACE) return [j + 1, "object"];
       for (;;) {
         j = firstValueByte(raw, j);
-        const keyStart = j;
+        // `j` may land on the closing brace when the last member was an EMPTY
+        // value (`"key":,`), whose end is the delimiter itself — not past it.
+        if (raw[j] === CLOSE_BRACE) return [j + 1, "object"];
         if (raw[j] !== QUOTE) throw new ScanError("expected object key", j);
+        const keyStart = j;
         const keyEnd = scanString(raw, j);
         const key = new TextDecoder().decode(raw.subarray(keyStart + 1, keyEnd - 1));
         const cpath = joinPath(path, key);
