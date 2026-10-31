@@ -15,12 +15,23 @@ import { ROOM_EXTRAS } from "../lib/icons.ts";
  * `checkCurrencyToCompleteAction`) stays read-only.
  */
 const PREFIX = "RoomDesign.";
+/** Installed decoration steps: `StepsState.<room>.v.<item|theme> = 1`. */
+const STEP_PREFIX = "StepsState.";
 
 interface RoomInfo {
   id: string;
   label: string;
   availablePath: string | null;
   availableLive: boolean | null;
+}
+
+interface StepRoom {
+  id: string;
+  label: string;
+  total: number;
+  done: number;
+  /** Numeric leaves that are not yet 1. */
+  todo: { path: string; value: number }[];
 }
 
 function Head({ title }: { title: string }) {
@@ -121,6 +132,8 @@ export function DecorationsSection() {
   const [loading, setLoading] = useState(true);
   const [fetchErr, setFetchErr] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [steps, setSteps] = useState<DiscoveredField[]>([]);
+  const [stepErr, setStepErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (!overview) {
@@ -156,6 +169,51 @@ export function DecorationsSection() {
       clearTimeout(timer);
     };
   }, [overview, query, toast]);
+
+  // Decoration completion lives in a separate root. It is large (thousands of
+  // leaves), so it is read once per save, not on every filter keystroke.
+  useEffect(() => {
+    if (!overview) {
+      setSteps([]);
+      setStepErr(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .discover(STEP_PREFIX, overview.meta.id, 6000)
+      .then((f) => {
+        if (!cancelled) {
+          setSteps(f);
+          setStepErr(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setStepErr(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [overview]);
+
+  const stepRooms = useMemo(() => {
+    const map = new Map<string, StepRoom>();
+    for (const f of steps) {
+      const rest = f.key.startsWith(STEP_PREFIX) ? f.key.slice(STEP_PREFIX.length) : f.key;
+      const dot = rest.indexOf(".");
+      if (dot < 0) continue;
+      const id = rest.slice(0, dot);
+      if (typeof f.value !== "number") continue;
+      let r = map.get(id);
+      if (!r) {
+        r = { id, label: prettify(id), total: 0, done: 0, todo: [] };
+        map.set(id, r);
+      }
+      r.total++;
+      if (f.value === 1) r.done++;
+      else r.todo.push({ path: f.path, value: f.value });
+    }
+    return [...map.values()].sort((a, b) => a.label.localeCompare(b.label));
+  }, [steps]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -208,9 +266,39 @@ export function DecorationsSection() {
   };
 
   const stagedKeys = useMemo(
-    () => [...pending.keys()].filter((k) => k.startsWith(PREFIX)),
+    () =>
+      [...pending.keys()].filter((k) => k.startsWith(PREFIX) || k.startsWith(STEP_PREFIX)),
     [pending],
   );
+
+  const completeRoom = (room: StepRoom) => {
+    if (room.todo.length === 0) {
+      toast.info("Already complete", `${room.label} has no unfinished decoration steps.`);
+      return;
+    }
+    for (const item of room.todo) setPending(item.path, 1);
+    pushLog(
+      "info",
+      `Completed ${room.label} decorations`,
+      `${room.todo.length} step${room.todo.length === 1 ? "" : "s"} staged — press Save, then Push`,
+    );
+  };
+
+  const completeAllRooms = () => {
+    let n = 0;
+    for (const room of stepRooms) {
+      for (const item of room.todo) {
+        setPending(item.path, 1);
+        n++;
+      }
+    }
+    if (n === 0) {
+      toast.info("Nothing to complete", "Every decoration step in this save is already done.");
+      return;
+    }
+    pushLog("info", "Completed all decorations", `${n} step${n === 1 ? "" : "s"} staged`);
+    toast.ok("All decoration steps staged", `${n} step${n === 1 ? "" : "s"} — press Save, then Push.`);
+  };
 
   const clearStaged = () => {
     const n = stagedKeys.length;
@@ -300,6 +388,74 @@ export function DecorationsSection() {
             ))}
           </div>
         </>
+      )}
+
+      {stepRooms.length > 0 ? (
+        <div style={{ marginTop: 18 }}>
+          <div className="am-row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div className="am-label" style={{ margin: 0 }}>
+                Decoration steps
+              </div>
+              <div className="am-hint" style={{ marginTop: 2 }}>
+                <code>StepsState.&lt;room&gt;.v.&lt;item&gt; = 1</code> records an applied decoration
+                step. Completing them marks every step done so the room's decor is unlocked in game.
+              </div>
+            </div>
+            <button
+              type="button"
+              className="am-ghost am-ghost--primary"
+              onClick={completeAllRooms}
+              title="Stage every unfinished decoration step in every room"
+            >
+              Complete all rooms
+            </button>
+          </div>
+
+          <div className="am-fieldgrid" style={{ marginTop: 10 }}>
+            {stepRooms.map((room) => {
+              const stagedHere = room.todo.filter((i) => pending.get(i.path) === 1).length;
+              const done = room.done + stagedHere;
+              const pct = room.total === 0 ? 100 : Math.round((done / room.total) * 100);
+              return (
+                <div className="am-field" key={room.id}>
+                  <div className="am-field-meta">
+                    <div className="am-field-label" title={room.id}>
+                      {room.label}
+                    </div>
+                    <div className="am-field-value">
+                      <span className="am-hint">
+                        {done}/{room.total} steps · {pct}%
+                      </span>
+                      {stagedHere > 0 ? <span className="am-staged">staged</span> : null}
+                      {room.todo.length > 0 ? (
+                        <button
+                          type="button"
+                          className="am-ghost"
+                          style={{ padding: "2px 8px", fontSize: 11 }}
+                          onClick={() => completeRoom(room)}
+                          title={`Stage the remaining ${room.todo.length} decoration step(s) in ${room.label}`}
+                        >
+                          Complete
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : stepErr ? (
+        <div className="am-hint" style={{ marginTop: 14 }}>
+          Decoration steps could not be read: {stepErr}
+        </div>
+      ) : (
+        <div className="am-hint" style={{ marginTop: 14, lineHeight: 1.5 }}>
+          This save carries no <code>StepsState.*</code> decoration records — a brand-new cloud save
+          has not installed any decor yet. Load a save that has played through rooms (or clone the
+          room content from the IGG Account Clone tab) to see decoration steps here.
+        </div>
       )}
 
       <AmActions />

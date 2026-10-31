@@ -22,10 +22,26 @@ import { useStudio } from "../lib/studio.tsx";
  *    community saves used `Properties.level`, which stored HUD level minus one.
  */
 const LEVEL_PATH = "Properties.LID_Lvl";
+const LEGACY_LEVEL_PATH = "Properties.level";
 const COINS_PATH = "Properties.coins";
 const STARS_PATH = "Properties.earnedStars";
 const SPENT_STARS_PATH = "Properties.spentStars";
 const LIVES_PATH = "Properties.lives.current";
+
+/** The in-game Profile panel's counters, all under the statistics dictionary. */
+const STAT_ROOT = "SpecialEvents.UserProfileFeature.v.UserProfileStatistics.v.";
+const STAT_KEYS = [
+  "ChampionsContestTotalCups",
+  "ChampionsContestMaxCups",
+  "ChampionsContestWins",
+  "FirstTryWins",
+  "LivesSent",
+  "LivesReceived",
+  "MaxWinStreak",
+  "CardsCollectionWins",
+  "ExpeditionsCompleted",
+  "QuestsCompleted",
+] as const;
 
 interface FreshField {
   path: string;
@@ -66,12 +82,19 @@ export function FreshStartSection() {
   const [stars, setStars] = useState(String(DEFAULTS.stars));
   const [lives, setLives] = useState(String(DEFAULTS.lives));
   const [alsoSpent, setAlsoSpent] = useState(true);
+  const [alsoStats, setAlsoStats] = useState(true);
 
   const staged = useMemo(
     () =>
-      [LEVEL_PATH, COINS_PATH, STARS_PATH, SPENT_STARS_PATH, LIVES_PATH].filter((p) =>
-        pending.has(p),
-      ),
+      [
+        LEVEL_PATH,
+        LEGACY_LEVEL_PATH,
+        COINS_PATH,
+        STARS_PATH,
+        SPENT_STARS_PATH,
+        LIVES_PATH,
+        ...STAT_KEYS.map((k) => `${STAT_ROOT}${k}`),
+      ].filter((p) => pending.has(p)),
     [pending],
   );
 
@@ -87,21 +110,38 @@ export function FreshStartSection() {
       { path: STARS_PATH, label: "Earned stars", hint: "lifetime", value: st },
       { path: LIVES_PATH, label: "Lives", hint: "current", value: lf },
     ];
+    // Older saves mirror the HUD level as `Properties.level = LID_Lvl - 1`.
+    // Keep both copies in step when the save actually carries the legacy key.
+    if (values[LEGACY_LEVEL_PATH] !== undefined) {
+      ops.push({
+        path: LEGACY_LEVEL_PATH,
+        label: "Legacy level",
+        hint: "LID_Lvl − 1",
+        value: Math.max(0, lv - 1),
+      });
+    }
     if (alsoSpent) {
       ops.push({ path: SPENT_STARS_PATH, label: "Spent stars", hint: "reset", value: 0 });
+    }
+    if (alsoStats) {
+      for (const key of STAT_KEYS) {
+        ops.push({ path: `${STAT_ROOT}${key}`, label: key, hint: "profile counter", value: 0 });
+      }
     }
 
     let n = 0;
     const created: string[] = [];
     for (const op of ops) {
       if (values[op.path] === undefined && !pending.has(op.path)) {
-        // The curated catalogue always lists these; flag honestly if absent.
+        // A fresh account has not written every counter yet. Save creates the
+        // missing key (or the whole dictionary wrapper) exactly the way the
+        // game itself writes a newly earned stat.
         created.push(op.label);
       }
       setPending(op.path, op.value);
       n++;
     }
-    const note = created.length > 0 ? ` (${created.join(", ")} not in catalogue)` : "";
+    const note = created.length > 0 ? ` (${created.length} new key${created.length === 1 ? "" : "s"} will be created)` : "";
     pushLog(
       "info",
       "Fresh-start values staged",
@@ -191,9 +231,10 @@ export function FreshStartSection() {
         />
       </div>
       <div className="am-hint" style={{ margin: "0 0 6px" }}>
-        Level is the number you want the HUD to show. Verified in game on this device: the HUD
-        reads one higher than the stored value (stored 600 → “601”, stored 1 → “2”), so this
-        stages one less — a fresh account targets HUD level 1.
+        Level is the number you want the HUD to show. On 9.2.x saves the game stores exactly
+        that number in <code>Properties.LID_Lvl</code> (stored 1 renders “1”); older saves kept
+        a second <code>Properties.level</code> copy holding HUD level − 1, and this stages both
+        when that key exists.
       </div>
 
       <div className="am-checkrow" style={{ padding: "9px 0" }}>
@@ -202,6 +243,14 @@ export function FreshStartSection() {
           onChange={setAlsoSpent}
           label="Also reset spent stars to 0"
           title="Stage Properties.spentStars = 0"
+        />
+      </div>
+      <div className="am-checkrow" style={{ padding: "0 0 9px" }}>
+        <AmCheck
+          on={alsoStats}
+          onChange={setAlsoStats}
+          label="Also reset the Profile statistics to 0"
+          title="Stage every UserProfileStatistics counter (Cups, wins, lives sent/received, streaks, collections, quests) to 0"
         />
       </div>
 

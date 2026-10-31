@@ -36,7 +36,7 @@ export function StudioApp() {
     <ToastProvider>
       {license ? (
         <StudioProvider>
-          <Shell />
+          <Shell owner={license.owner} />
         </StudioProvider>
       ) : (
         <LockScreen onUnlocked={setLicense} />
@@ -86,7 +86,7 @@ const PILLS: PillDef[] = [
   { id: "cards", label: "Cards", icon: "assets/ui/nav-cards.png", width: "217px" },
 ];
 
-function Shell() {
+function Shell({ owner }: { owner: boolean }) {
   const {
     loading,
     overview,
@@ -298,7 +298,7 @@ function Shell() {
             <div className="am-sep" />
 
             <nav className="am-nav am-nav--lower" aria-label="Collections">
-              {NAV_LOWER.map((n) => (
+              {NAV_LOWER.filter((n) => n.id !== "owner" || owner).map((n) => (
                 <NavItem key={n.id} def={n} />
               ))}
             </nav>

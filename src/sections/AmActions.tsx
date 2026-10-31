@@ -42,7 +42,15 @@ export function AmActions({
     if (pushing || applying) return;
     setPushing(true);
     try {
-      // 1) Persist staged edits first — a push always sends saved bytes.
+      // 0) A section with its own persistence (cosmetics grants, equips) must
+      //    land BEFORE the push. Skipping this used to push a save that never
+      //    contained the staged unlock — the tab showed "staged" while the
+      //    game showed nothing.
+      if (onSave) {
+        const saved = await onSave();
+        if (!saved) return; // onSave already explained the refusal
+      }
+      // 1) Persist staged field edits first — a push always sends saved bytes.
       if (pending.size > 0) {
         const ok = await applyPending();
         if (!ok) return; // applyPending already explained the refusal

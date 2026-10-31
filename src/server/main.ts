@@ -39,12 +39,15 @@ import {
   issue as licenseIssue,
   licenseRequired,
   LicenseError,
+  removeKey as licenseRemoveKey,
   requireLicense,
   resetDevices as licenseResetDevices,
   setActive as licenseSetActive,
   snapshot as licenseSnapshot,
   storageKind as licenseStorageKind,
   store as licenseStore,
+  tokenFromHeader,
+  verifyToken as licenseVerifyToken,
 } from "./license.ts";
 import { asciiTokens, decodeBlkZstd, scanVsoDir, uniqueTokens } from "../engine/upk.ts";
 import {
@@ -250,13 +253,15 @@ interface CardsGrantBody {
 
 interface OwnerBody {
   passcode?: string;
-  action?: "issue" | "list" | "revoke" | "restore" | "reset-devices";
-  plan?: "trial" | "week" | "month" | "year" | "lifetime";
+  action?: "issue" | "list" | "revoke" | "restore" | "reset-devices" | "delete";
+  plan?: "trial" | "week" | "month" | "year" | "lifetime" | "custom";
   days?: number;
+  hours?: number;
   devices?: number;
   count?: number;
   note?: string;
   key?: string;
+  bindDevice?: string;
 }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
@@ -289,13 +294,40 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     return;
   }
 
+  // Auto-resume on reload: re-validate the sealed token against the store so a
+  // revoked or expired key cannot keep a 12-hour session alive.
+  if (route === "GET /api/license/verify") {
+    if (!licenseRequired()) {
+      sendJson(res, 200, {
+        ok: true,
+        license: { plan: "local", expiresAt: 0, remainingMs: 0, status: "active", owner: true, devices: 1, maxDevices: 0 },
+      });
+      return;
+    }
+    const payload = requireLicense(req);
+    if (!payload) throw new SessionError("activation required", 401);
+    const snap = await licenseVerifyToken(payload);
+    sendJson(res, 200, { ok: true, license: snap });
+    return;
+  }
+
   if (route === "POST /api/license/owner") {
-    // The owner passcode IS the credential here — an owner must be able to
-    // issue the very first key, before any token exists.
+    // Two credentials open the console: the HS_OWNER passcode (so the owner can
+    // issue the very first key before any token exists) or an owner token
+    // already minted by activating with that passcode.
     const body = await readJson<OwnerBody>(req);
-    const passcode = String(body.passcode ?? "");
-    if (!process.env.HS_OWNER?.trim()) throw new SessionError("HS_OWNER is not configured on this server", 503);
-    if (passcode !== process.env.HS_OWNER.trim()) throw new SessionError("Wrong owner passcode", 401);
+    const passcode = String(body.passcode ?? "").trim();
+    const configured = process.env.HS_OWNER?.trim() ?? "";
+    const token = tokenFromHeader(req);
+    const viaPasscode =
+      configured.length > 0 && passcode.length > 0 && passcode.toLowerCase() === configured.toLowerCase();
+    const viaToken = token?.plan === "owner";
+    if (!viaPasscode && !viaToken) {
+      if (configured.length === 0) {
+        throw new SessionError("HS_OWNER is not configured on this server", 503);
+      }
+      throw new SessionError(passcode.length > 0 ? "Wrong owner passcode" : "Owner access required", 401);
+    }
     if (body.action === "issue") {
       const issued = await licenseIssue(body);
       sendJson(res, 200, { ok: true, issued });
@@ -303,11 +335,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     if (body.action === "list") {
       const rows = await licenseStore.all();
-      sendJson(res, 200, { ok: true, rows: rows.map((r) => ({ ...r, fp: r.fp.slice(0, 12), snap: licenseSnapshot(r) })) });
+      sendJson(res, 200, {
+        ok: true,
+        // The full fingerprint is returned on purpose: it is not the key and it
+        // is the handle every revoke/restore/delete action takes.
+        rows: rows.map((r) => ({ ...r, snap: licenseSnapshot(r) })),
+      });
       return;
     }
     if (body.action === "revoke" || body.action === "restore") {
-      const done = await licenseSetActive(body.key ?? "", body.action === "restore");
+      const done = await licenseSetActive(
+        body.key ?? "",
+        body.action === "restore",
+        body.action === "restore" ? Number(body.days ?? 0) : 0,
+      );
       sendJson(res, done ? 200 : 404, { ok: done, error: done ? undefined : "no such key" });
       return;
     }
@@ -316,7 +357,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       sendJson(res, done ? 200 : 404, { ok: done, error: done ? undefined : "no such key" });
       return;
     }
-    throw new SessionError("`action` must be issue | list | revoke | restore | reset-devices", 400);
+    if (body.action === "delete") {
+      const done = await licenseRemoveKey(body.key ?? "");
+      sendJson(res, done ? 200 : 404, { ok: done, error: done ? undefined : "no such key" });
+      return;
+    }
+    throw new SessionError("`action` must be issue | list | revoke | restore | reset-devices | delete", 400);
   }
 
   // Everything below this line edits a save, so it needs a valid token.

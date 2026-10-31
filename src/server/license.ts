@@ -27,7 +27,7 @@ const STORE_FILE = join(ROOT, "data", ".hs-licenses.json");
 /** Crockford base32 — no I, L, O, U, so a key cannot be mistyped into another. */
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-export type Plan = "trial" | "week" | "month" | "year" | "lifetime" | "owner";
+export type Plan = "trial" | "week" | "month" | "year" | "lifetime" | "custom" | "owner";
 
 export interface LicenseRow {
   /** HMAC-SHA256 of the normalized key. The key itself is never persisted. */
@@ -58,6 +58,7 @@ const PLAN_DAYS: Record<Exclude<Plan, "owner">, number> = {
   month: 30,
   year: 365,
   lifetime: 0,
+  custom: 7,
 };
 
 export const masterKey = (): string => (process.env.HS_MASTER ?? "").trim();
@@ -84,6 +85,26 @@ export function normalizeKey(input: string): string {
     .replace(/[^A-Z0-9]/g, "");
   const body = raw.startsWith("HS") ? raw.slice(2) : raw;
   return body.replace(/O/g, "0").replace(/[IL]/g, "1");
+}
+
+/**
+ * Every normalized body a presented string could mean.
+ *
+ * `normalizeKey` strips a leading `HS`, which is right for `HS-XXXXX-…` but
+ * wrong for a key body that happens to start with those two symbols (the
+ * Crockford alphabet contains both). Activation tries each variant so a client
+ * can paste the key with or without its prefix and never be refused.
+ */
+export function keyVariants(input: string): string[] {
+  const raw = String(input ?? "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  if (!raw) return [];
+  const fix = (s: string) => s.replace(/O/g, "0").replace(/[IL]/g, "1");
+  const out = new Set<string>();
+  out.add(fix(raw.startsWith("HS") ? raw.slice(2) : raw));
+  if (raw.startsWith("HS")) out.add(fix(raw));
+  return [...out].filter((s) => s.length > 0);
 }
 
 /** HMAC fingerprint of a normalized key body. */
@@ -198,6 +219,7 @@ export interface Store {
   get: (fp: string) => Promise<LicenseRow | null>;
   put: (row: LicenseRow) => Promise<void>;
   all: () => Promise<LicenseRow[]>;
+  remove: (fp: string) => Promise<boolean>;
 }
 
 export const store: Store = {
@@ -233,6 +255,19 @@ export const store: Store = {
       return rows.map(rowFromDb);
     }
     return [...loadFile().values()];
+  },
+  async remove(fp) {
+    const db = await getPool();
+    if (db) {
+      const res = (await db.query("delete from hs_licenses where fp = $1", [fp])) as unknown as {
+        rowCount?: number;
+      };
+      return (res.rowCount ?? 0) > 0;
+    }
+    const map = loadFile();
+    const had = map.delete(fp);
+    if (had) saveFile(map);
+    return had;
   },
 };
 
@@ -299,10 +334,16 @@ export async function activate(rawKey: string, deviceId: string): Promise<{ toke
     };
   }
 
-  const normalized = normalizeKey(presented);
-  if (normalized.length < 10) throw new LicenseError("That does not look like a key (HS-XXXXX-XXXXX-XXXXX-XXXXX)");
+  const variants = keyVariants(presented);
+  if (variants.every((v) => v.length < 10)) {
+    throw new LicenseError("That does not look like a key (HS-XXXXX-XXXXX-XXXXX-XXXXX)");
+  }
 
-  const row = await store.get(fingerprint(normalized));
+  let row: LicenseRow | null = null;
+  for (const body of variants) {
+    row = await store.get(fingerprint(body));
+    if (row) break;
+  }
   if (!row) throw new LicenseError("Invalid key");
   const snap = snapshot(row);
   if (snap.status === "revoked") throw new LicenseError("This key has been revoked");
@@ -322,6 +363,31 @@ export async function activate(rawKey: string, deviceId: string): Promise<{ toke
   return { token: sealToken(payload), snap: snapshot(row) };
 }
 
+/** Header token, verified but without a store round-trip. Null when absent/invalid. */
+export function tokenFromHeader(req: { headers: Record<string, string | string[] | undefined> }): TokenPayload | null {
+  const header = req.headers["x-hs-token"];
+  const token = Array.isArray(header) ? header[0] : header;
+  if (!token) return null;
+  return openToken(token);
+}
+
+/**
+ * Re-check a token against the store — the auto-resume path on reload.
+ * A revoked or expired key stops working even while its sealed token is still
+ * cryptographically valid.
+ */
+export async function verifyToken(payload: TokenPayload): Promise<LicenseSnap> {
+  if (payload.plan === "owner") {
+    return { plan: "owner", expiresAt: 0, remainingMs: 0, status: "active", owner: true, devices: 1, maxDevices: 0 };
+  }
+  const row = await store.get(payload.fp);
+  if (!row) throw new LicenseError("Invalid key");
+  const snap = snapshot(row);
+  if (snap.status === "revoked") throw new LicenseError("This key has been revoked");
+  if (snap.status === "expired") throw new LicenseError("This key has expired");
+  return snap;
+}
+
 /** Resolve the caller from `x-hs-token`. Throws when the gate is on and invalid. */
 export function requireLicense(req: { headers: Record<string, string | string[] | undefined> }): TokenPayload | null {
   if (!licenseRequired()) return null;
@@ -338,19 +404,37 @@ export function requireLicense(req: { headers: Record<string, string | string[] 
 export interface IssueInput {
   plan?: Plan;
   days?: number;
+  hours?: number;
   devices?: number;
   count?: number;
   note?: string;
+  /** Pre-bind the key to one device id. */
+  bindDevice?: string;
 }
 
 export async function issue(input: IssueInput): Promise<{ key: string; snap: LicenseSnap }[]> {
   const plan = (input.plan ?? "month") as Plan;
   if (plan === "owner") throw new LicenseError("`owner` is not an issuable plan", 400);
-  const days = plan === "lifetime" ? 0 : Number(input.days ?? PLAN_DAYS[plan as Exclude<Plan, "owner">]);
+  const days =
+    plan === "lifetime"
+      ? 0
+      : plan === "custom"
+        ? Number(input.days ?? 0)
+        : Number(input.days ?? PLAN_DAYS[plan as Exclude<Plan, "owner">]);
+  const hours = plan === "custom" ? Number(input.hours ?? 0) : 0;
   if (!Number.isFinite(days) || days < 0) throw new LicenseError("`days` must be a non-negative number", 400);
+  if (!Number.isFinite(hours) || hours < 0) throw new LicenseError("`hours` must be a non-negative number", 400);
+  if (plan === "custom" && days + hours <= 0) {
+    throw new LicenseError("a custom key needs at least one day or hour", 400);
+  }
   const maxDevices = Math.max(1, Math.min(10, Number(input.devices ?? 1)));
   const count = Math.max(1, Math.min(50, Number(input.count ?? 1)));
+  const bound = String(input.bindDevice ?? "").trim();
   const now = Date.now();
+  // A key is lifetime only when BOTH the day and hour windows are zero. A
+  // custom `0 days + 2 hours` key is a 2-hour key, not a lifetime licence.
+  const lifetime = days === 0 && hours === 0;
+  const ttlMs = lifetime ? 0 : days * 86_400_000 + hours * 3_600_000;
   const out: { key: string; snap: LicenseSnap }[] = [];
   for (let i = 0; i < count; i++) {
     const key = mintKey();
@@ -358,9 +442,9 @@ export async function issue(input: IssueInput): Promise<{ key: string; snap: Lic
       fp: fingerprint(normalizeKey(key)),
       plan,
       createdAt: now,
-      expiresAt: days === 0 ? 0 : now + days * 86_400_000,
+      expiresAt: ttlMs === 0 ? 0 : now + ttlMs,
       maxDevices,
-      devices: [],
+      devices: bound ? [bound] : [],
       active: true,
       note: String(input.note ?? "").slice(0, 200),
     };
@@ -370,27 +454,61 @@ export async function issue(input: IssueInput): Promise<{ key: string; snap: Lic
   return out;
 }
 
-/** Revoke (or restore) a key. Accepts the raw key or its fingerprint. */
-export async function setActive(keyOrFp: string, active: boolean): Promise<boolean> {
+/**
+ * Resolve an owner-supplied reference to a stored row — the full 64-hex
+ * fingerprint, a unique fingerprint prefix, or the raw key itself.
+ */
+async function resolveRow(keyOrFp: string): Promise<LicenseRow | null> {
   const raw = String(keyOrFp ?? "").trim();
-  if (!raw) throw new LicenseError("`key` is required", 400);
-  const fp = /^[0-9a-f]{64}$/i.test(raw) ? raw.toLowerCase() : fingerprint(normalizeKey(raw));
-  const row = await store.get(fp);
+  if (!raw) return null;
+  if (/^[0-9a-f]{64}$/i.test(raw)) return store.get(raw.toLowerCase());
+  // Try the presented string as a key before treating it as a fingerprint
+  // prefix: a Crockford body can, very rarely, be all hex characters and would
+  // otherwise be mistaken for a prefix and resolve to nothing.
+  for (const body of keyVariants(raw)) {
+    const row = await store.get(fingerprint(body));
+    if (row) return row;
+  }
+  if (/^[0-9a-f]{12,63}$/i.test(raw)) {
+    const all = await store.all();
+    const prefix = raw.toLowerCase();
+    const hits = all.filter((r) => r.fp.startsWith(prefix));
+    return hits.length === 1 ? hits[0]! : null;
+  }
+  return null;
+}
+
+/** Revoke (or restore) a key. Accepts the raw key, fingerprint or a unique prefix. */
+export async function setActive(keyOrFp: string, active: boolean, extendDays = 0): Promise<boolean> {
+  if (!String(keyOrFp ?? "").trim()) throw new LicenseError("`key` is required", 400);
+  const row = await resolveRow(keyOrFp);
   if (!row) return false;
   row.active = active;
+  // "Restore time" is a renewal: extend from expiry (or now, if it lapsed).
+  const days = Number(extendDays ?? 0);
+  if (active && Number.isFinite(days) && days > 0 && row.expiresAt !== 0) {
+    row.expiresAt = Math.max(Date.now(), row.expiresAt) + days * 86_400_000;
+  }
   await store.put(row);
   return true;
 }
 
 /** Free the device slots on a key (a client changed PC / reinstalled). */
 export async function resetDevices(keyOrFp: string): Promise<boolean> {
-  const raw = String(keyOrFp ?? "").trim();
-  const fp = /^[0-9a-f]{64}$/i.test(raw) ? raw.toLowerCase() : fingerprint(normalizeKey(raw));
-  const row = await store.get(fp);
+  if (!String(keyOrFp ?? "").trim()) throw new LicenseError("`key` is required", 400);
+  const row = await resolveRow(keyOrFp);
   if (!row) return false;
   row.devices = [];
   await store.put(row);
   return true;
+}
+
+/** Permanently erase a key. The fingerprint that references it stops resolving. */
+export async function removeKey(keyOrFp: string): Promise<boolean> {
+  if (!String(keyOrFp ?? "").trim()) throw new LicenseError("`key` is required", 400);
+  const row = await resolveRow(keyOrFp);
+  if (!row) return false;
+  return store.remove(row.fp);
 }
 
 /** Stable, non-secret id for a 4MB-container session — used by the audit log. */

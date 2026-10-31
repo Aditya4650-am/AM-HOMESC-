@@ -270,14 +270,18 @@ export interface LicenseSnap {
 }
 
 export interface OwnerRequest {
-  passcode: string;
-  action: "issue" | "list" | "revoke" | "restore" | "reset-devices";
-  plan?: "trial" | "week" | "month" | "year" | "lifetime";
+  /** Empty/omitted when the caller already holds an owner activation token. */
+  passcode?: string;
+  action: "issue" | "list" | "revoke" | "restore" | "reset-devices" | "delete";
+  plan?: "trial" | "week" | "month" | "year" | "lifetime" | "custom";
   days?: number;
+  hours?: number;
   devices?: number;
   count?: number;
   note?: string;
   key?: string;
+  /** Pre-bind the new key to a device id (single-device keys). */
+  bindDevice?: string;
 }
 
 export interface OwnerRow {
@@ -345,6 +349,10 @@ export const api = {
 
   licenseActivate: (key: string, deviceId: string) =>
     post<{ ok: boolean; token: string; license: LicenseSnap }>("/api/license/activate", { key, deviceId }),
+
+  /** Re-check the stored token (auto-resume on reload; rejects revoked/expired keys). */
+  licenseVerify: () =>
+    request<{ ok: boolean; license: LicenseSnap }>("/api/license/verify"),
 
   licenseOwner: (payload: OwnerRequest) =>
     post<{ ok: boolean; issued?: { key: string; snap: LicenseSnap }[]; rows?: OwnerRow[] }>(

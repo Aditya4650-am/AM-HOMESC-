@@ -5,8 +5,13 @@ dist/
 
 # Local save fixtures & device state (never commit game saves)
 decoded/*.db
+data/backup_*/
 *.hcsbak
 cycle-state.json
+hs_repo.zip
+
+# Local PyInstaller output (the shippable zip lives in client/dist)
+client/build/
 
 # Local license store (used only when DATABASE_URL is unset)
 data/.hs-licenses.json
