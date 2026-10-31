@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { scanSpans, valueText } from "./json-span.ts";
 import {
   applyEdits,
@@ -44,7 +45,7 @@ import { runApply } from "./operations.ts";
  * skipped — the engine's most important guarantees were never checked
  * automatically.
  */
-const SHIPPED_FIXTURE = new URL("../../data/IGG-account.db", import.meta.url).pathname;
+const SHIPPED_FIXTURE = fileURLToPath(new URL("../../data/IGG-account.db", import.meta.url));
 const FIXTURE =
   process.env.HS_FIXTURE ??
   (existsSync(SHIPPED_FIXTURE) ? SHIPPED_FIXTURE : "C:\\Users\\User\\Downloads\\Telegram Desktop\\SaveGame.db");
