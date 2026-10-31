@@ -1,0 +1,84 @@
+name: Verify
+
+# Every push and PR must prove the engine's invariants and that the app builds.
+# This workflow did not exist: the only CI job built the Windows EXE on a tag, so
+# a change could break the save engine, the typecheck or the bundle and nothing
+# said a word until a client hit it.
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci --include=dev
+
+      - name: Typecheck (strict)
+        run: npm run typecheck
+
+      - name: Engine test-suite
+        # Includes the integration cases against the save this repo ships
+        # (data/IGG-account.db). Set HS_LIVE to also exercise the XOR container.
+        run: npm test
+
+      - name: UI smoke test (every tab renders)
+        # Renders the real app in jsdom against a real server and clicks all 25
+        # navigation entries — the check that would have caught twelve finished
+        # sections never being mounted.
+        run: npm run test:ui
+
+      - name: Production build
+        run: npm run build
+
+      - name: Server smoke test
+        # Boots the real server, checks health, and proves a load → export
+        # round-trip is byte-identical through the HTTP API.
+        run: |
+          set -euo pipefail
+          PORT=8787 HOST=127.0.0.1 node --experimental-strip-types src/server/main.ts &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:8787/api/health >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          curl -fsS http://127.0.0.1:8787/api/health | tee /dev/stderr | grep -q '"ok":true'
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const raw = readFileSync("data/IGG-account.db");
+            const b64 = raw.toString("base64");
+            const post = async (path, body) => {
+              const r = await fetch(`http://127.0.0.1:8787${path}`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(body),
+              });
+              return { status: r.status, json: await r.json() };
+            };
+            const loaded = await post("/api/session/load", { name: "ci", b64 });
+            if (loaded.status !== 200) throw new Error("load failed: " + JSON.stringify(loaded.json));
+            const id = loaded.json.overview.meta.id;
+            const res = await fetch(`http://127.0.0.1:8787/api/export?sessionId=${id}`);
+            const out = Buffer.from(await res.arrayBuffer());
+            if (Buffer.compare(out, raw) !== 0) throw new Error("export is not byte-identical");
+            const values = await (await fetch(`http://127.0.0.1:8787/api/values?sessionId=${id}`)).json();
+            if (values.values["Properties.coins"] !== 2144822766) throw new Error("wrong coins value");
+            console.log("load -> export round-trip: byte-identical,", out.length, "bytes");
+          '

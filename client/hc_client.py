@@ -643,34 +643,80 @@ def _latest_release_tag(repo: str) -> str:
     return tag
 
 
+def _release_sha256(repo: str, tag: str, asset: str) -> str:
+    """Read the published SHA-256 for a release asset.
+
+    The client refuses to swap its own executable without one. A checksum
+    fetched from the same host as the asset is not a signature, but it does
+    catch a truncated or replaced upload — and, unlike the old code, it makes
+    "no checksum published" a hard failure instead of a silent pass.
+    """
+    for name in (f"{asset}.sha256", "SHA256SUMS", "sha256sums.txt"):
+        url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+        try:
+            req = _urlrequest.Request(url, headers={"User-Agent": "hc-client"})
+            with _urlrequest.urlopen(req, timeout=30) as r:
+                body = r.read().decode("utf-8", "replace")
+        except Exception:
+            continue
+        for line in body.splitlines():
+            parts = line.split()
+            if not parts:
+                continue
+            digest = parts[0].strip().lower()
+            target = parts[-1].lstrip("*") if len(parts) > 1 else asset
+            if len(digest) == 64 and target.endswith(asset):
+                return digest
+    return ""
+
+
 def _cmd_update() -> int:
-    """Self-update from a GitHub release zip.
+    """Self-update from THIS project's GitHub release.
 
     Env:
-      HC_UPDATE_REPO   - owner/repo to pull from (default the IGG VIP Studio repo)
-      HC_UPDATE_ASSET   - release asset name (default IGG.VIP.TOOL.zip)
-      HC_UPDATE_TAG     - pin a tag (skips the latest-release lookup)
-      HC_UPDATE_SHA256  - expected SHA-256 of the asset; mismatch refuses to swap
+      HC_UPDATE_REPO   - owner/repo to pull from (default this project)
+      HC_UPDATE_ASSET  - release asset name (default the Homescapes client zip)
+      HC_UPDATE_TAG    - pin a tag (skips the latest-release lookup)
+      HC_UPDATE_SHA256 - pin the expected SHA-256 (overrides the published one)
+
+    The old defaults pointed at the IGG VIP Studio repo and its asset, so
+    `hc update` installed a DIFFERENT application over this one. The swap is now
+    also gated on a checksum that must exist, and on the archive containing the
+    executable this build actually ships.
     """
-    repo = os.environ.get("HC_UPDATE_REPO") or "Aditya4650-am/igg-vip-studio"
-    asset = os.environ.get("HC_UPDATE_ASSET") or "IGG.VIP.TOOL.zip"
+    repo = os.environ.get("HC_UPDATE_REPO") or "Aditya4650-am/AM-HOMESC-"
+    asset = os.environ.get("HC_UPDATE_ASSET") or "HOMESC.SAVE.STUDIO.zip"
     tag = os.environ.get("HC_UPDATE_TAG") or _latest_release_tag(repo)
     url = f"https://github.com/{repo}/releases/download/{tag}/{asset}"
     dest = Path(tempfile.gettempdir()) / f"hc_update_{tag}.zip"
+    _emit({"ok": True, "event": "update", "stage": "download", "repo": repo, "tag": tag})
     req = _urlrequest.Request(url, headers={"User-Agent": "hc-client"})
     with _urlrequest.urlopen(req, timeout=900) as r:
         dest.write_bytes(r.read())
     got = _sha256_file(dest)
-    want = (os.environ.get("HC_UPDATE_SHA256") or "").strip().lower()
-    if want and got != want:
+    want = (os.environ.get("HC_UPDATE_SHA256") or "").strip().lower() or _release_sha256(repo, tag, asset)
+    if not want:
+        raise ClientError(
+            f"no SHA-256 published for {asset} in {repo}@{tag} — refusing to replace the "
+            "client with an unverified download"
+        )
+    if got != want:
         raise ClientError(f"checksum mismatch: got {got}, want {want}")
+
     import zipfile
 
     with zipfile.ZipFile(dest) as z:
         names = [n for n in z.namelist() if n.lower().endswith(".exe")]
-        if not names:
+        # Take OUR executable, and say so if it is not there.
+        preferred = [n for n in names if Path(n).stem.lower() == APP_NAME.lower()]
+        entry = (preferred or names)[0] if names else None
+        if not entry:
             raise ClientError("no exe inside the release zip")
-        entry = names[0]
+        if not preferred:
+            raise ClientError(
+                f"the release zip holds no {APP_NAME}.exe (found: {', '.join(names[:3])}) — "
+                "refusing to install it"
+            )
         with z.open(entry) as src, open(dest.with_suffix(".exe"), "wb") as out:
             out.write(src.read())
     new_exe = Path(str(dest) + ".exe")
@@ -681,9 +727,6 @@ def _cmd_update() -> int:
     sys.stdout.flush()
     sys.stderr.flush()
     os._exit(0)
-
-
-
 
 
 # --------------------------------------------------------------------- proxy --
@@ -844,22 +887,42 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
     return ProxyHandler
 
 
-def _serve_proxy(port: int, upstream_base: str) -> ThreadingHTTPServer:
+def _start_proxy(port: int, upstream_base: str) -> tuple[ThreadingHTTPServer, int]:
+    """Start the local device proxy on a background thread.
+
+    `port=0` asks the OS for a free port, which is what the desktop shell wants:
+    a fixed 8790 collides with the second copy of the app or with anything else
+    already listening. Returns the server and the port actually bound.
+    """
     handler = _make_proxy_handler(HomescapesClient(), upstream_base)
     server = ThreadingHTTPServer(("127.0.0.1", port), handler)
     server.daemon_threads = True
+    bound = server.server_address[1]
 
     def _run() -> None:
-        server.serve_forever()
         try:
-            server.server_close()
-        except Exception:
-            pass
+            server.serve_forever()
+        finally:
+            try:
+                server.server_close()
+            except Exception:
+                pass
 
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-    print(f"[hc_client] proxy listening on http://127.0.0.1:{port} -> {upstream_base}", flush=True)
-    thread.join()
+    threading.Thread(target=_run, daemon=True, name="hc-proxy").start()
+    print(f"[hc_client] proxy listening on http://127.0.0.1:{bound} -> {upstream_base}", flush=True)
+    return server, bound
+
+
+def _serve_proxy(port: int, upstream_base: str) -> ThreadingHTTPServer:
+    """CLI mode: run the proxy in the foreground until interrupted."""
+    server, bound = _start_proxy(port, upstream_base)
+    print(f"[hc_client] proxy listening on http://127.0.0.1:{bound} -> {upstream_base}", flush=True)
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        pass
+    server.shutdown()
     return server
 
 
@@ -931,7 +994,21 @@ def _cli(argv: list[str]) -> int:
 # ── desktop shell ────────────────────────────────────────────────────────────
 
 def _serve_window() -> int:
-    """Open a native WebView2 window over the studio server."""
+    """Open a native WebView2 window over the studio.
+
+    The window loads a LOCAL proxy whose upstream is ``HC_STUDIO_URL`` (or the
+    default deployment). That is the split the module docstring describes and
+    the reason it matters:
+
+      * ``/api/devices`` and ``/api/device/*`` are answered by this process,
+        driving ADB on the user's own machine;
+      * every other route is forwarded to the studio server, wherever it lives.
+
+    The previous build pointed the window straight at the remote URL and
+    ``expose()``d the ADB client to it, so a page served by someone else's
+    deployment could push a save to the user's emulator. Loopback origin means
+    the page that holds the bridge is one we control.
+    """
     try:
         import webview  # pywebview
     except ImportError:
@@ -942,8 +1019,15 @@ def _serve_window() -> int:
         )
         return 2
 
-    device_id = get_device_id() if 'get_device_id' in globals() else ""
-    url = with_device_param(normalize_base_url(resolve_server_url()), device_id)
+    upstream = normalize_base_url(resolve_server_url())
+    try:
+        _server, port = _start_proxy(0, upstream)
+    except OSError as exc:
+        sys.stderr.write(f"could not start the local device bridge on loopback: {exc}\n")
+        return 2
+
+    device_id = get_device_id()
+    url = with_device_param(f"http://127.0.0.1:{port}", device_id)
     window = webview.create_window(
         APP_NAME,
         url,
@@ -952,14 +1036,37 @@ def _serve_window() -> int:
         min_size=(1024, 700),
         background_color="#0b0f17",
     )
-    # Expose the bridge so the UI can drive ADB without an HTTP hop.
+    # Expose the bridge so the UI can drive ADB without an HTTP hop. This object
+    # is only reachable from the loopback page above.
     window.expose(HomescapesClient())
-    webview.start(debug=bool(os.environ.get("HC_DEBUG")), js_api=True)
-    # Inject the alias so window.hcNative is available.
+
+    def _install_alias() -> None:
+        """Alias window.pywebview.api as window.hcNative once the page is up.
+
+        This MUST run from webview.start's callback: `webview.start()` blocks
+        until the window closes, so the old code called evaluate_js on a dead
+        window and `window.hcNative` never existed at all.
+        """
+        try:
+            window.events.loaded.wait(20)
+        except Exception:
+            pass
+        for _ in range(40):
+            try:
+                if window.evaluate_js("!!(window.pywebview && window.pywebview.api)"):
+                    window.evaluate_js(_ALIAS_JS)
+                    return
+            except Exception:
+                pass
+            time.sleep(0.25)
+
     try:
-        window.evaluate_js(_ALIAS_JS)
-    except Exception:
-        pass
+        webview.start(func=_install_alias, debug=bool(os.environ.get("HC_DEBUG")))
+    finally:
+        try:
+            _server.shutdown()
+        except Exception:
+            pass
     return 0
 
 

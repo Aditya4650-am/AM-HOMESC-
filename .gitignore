@@ -17,3 +17,7 @@ client/build/
 data/.hs-licenses.json
 
 client/__pycache__/
+
+# A stale repo-level `cache=` in .npmrc used to make npm create a directory named
+# `G:\hs_build\npm-cache` inside the working tree. Keep that out of git forever.
+G:*npm-cache/

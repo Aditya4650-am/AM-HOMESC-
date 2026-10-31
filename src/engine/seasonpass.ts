@@ -208,7 +208,7 @@ function parseJson(text: string): Json | undefined {
 function componentNames(donor: SaveGame, season: string): Map<number, string> {
   const m = new Map<number, string>();
   const re = new RegExp(
-    `^SpecialEvents\\.${season}\\.v\\.components\\[(\\d+)\\]\\.v\\.first$`,
+    `^SpecialEvents\\.${escapeRe(season)}\\.v\\.components\\[(\\d+)\\]\\.v\\.first$`,
   );
   for (const p of donor.paths()) {
     const mt = re.exec(p);
@@ -218,12 +218,18 @@ function componentNames(donor: SaveGame, season: string): Map<number, string> {
 }
 
 function componentIndex(save: SaveGame, season: string, name: string): number | undefined {
-  const re = new RegExp(`^SpecialEvents\\.${season}\\.v\\.components\\[(\\d+)\\]\\.v\\.first$`);
+  const escaped = escapeRe(season);
+  const re = new RegExp(`^SpecialEvents\\.${escaped}\\.v\\.components\\[(\\d+)\\]\\.v\\.first$`);
   for (const p of save.paths()) {
     const mt = re.exec(p);
     if (mt && String(save.field(p).value) === name) return Number(mt[1]);
   }
   return undefined;
+}
+
+/** Escape a season id / component name before interpolating into a RegExp. */
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 interface WalkCtx {
@@ -234,6 +240,67 @@ interface WalkCtx {
   protectedFields: Set<string>;
   /** Paths whose device/donor node types disagree — cannot be copied. */
   mismatches: string[];
+}
+
+/**
+ * Re-order the donor's `components[]` so index i carries the SAME component the
+ * account carries at index i.
+ *
+ * `walk` diffs two JSON trees positionally — that is exactly right for a save's
+ * arrays (a stage ladder row means the same thing at the same index) and exactly
+ * WRONG for a component list, whose order is incidental. Without this alignment
+ * an account holding `[Cheats, Dispatcher, EventLogic, …]` was diffed against a
+ * donor holding `[EventLogic, MainWindow, LogEventComponent, …]`: every write
+ * landed on the wrong component, and because `components[i].v.first` differs,
+ * the diff also RENAMED the account's components. Measured on a synthetic
+ * re-ordered save: `components[0].v.first` was rewritten to `"EventLogic"`.
+ *
+ * Matching is by component NAME (the `v.first` string), which is the identity
+ * the game itself uses. A donor component with no counterpart on the account is
+ * dropped — its position means nothing, so inserting it would be invention.
+ */
+function alignComponents(
+  donorEvent: Json,
+  deviceEvent: Json,
+): { aligned: Json; unmatchedDonor: string[]; unmatchedAccount: string[] } {
+  const empty = { aligned: donorEvent, unmatchedDonor: [], unmatchedAccount: [] };
+  if (!isObj(donorEvent) || !isObj(deviceEvent)) return empty;
+  const dComps = donorEvent["components"];
+  const aComps = deviceEvent["components"];
+  if (!Array.isArray(dComps) || !Array.isArray(aComps)) return empty;
+
+  const nameOf = (c: Json | undefined): string | undefined => {
+    if (!isObj(c)) return undefined;
+    const v = c["v"];
+    if (!isObj(v)) return undefined;
+    const first = v["first"];
+    return typeof first === "string" ? first : undefined;
+  };
+
+  const byName = new Map<string, Json>();
+  for (const c of dComps) {
+    const n = nameOf(c);
+    if (n) byName.set(n, c);
+  }
+
+  const used = new Set<string>();
+  const slots: Json[] = [];
+  const unmatchedAccount: string[] = [];
+  for (const a of aComps) {
+    const n = nameOf(a);
+    const donor = n ? byName.get(n) : undefined;
+    if (n && donor) {
+      slots.push(donor);
+      used.add(n);
+    } else {
+      if (n) unmatchedAccount.push(n);
+      // A null slot keeps the index aligned; `walk` ignores a non-object donor.
+      slots.push(null);
+    }
+  }
+
+  const unmatchedDonor = [...byName.keys()].filter((n) => !used.has(n));
+  return { aligned: { ...donorEvent, components: slots }, unmatchedDonor, unmatchedAccount };
 }
 
 function walk(
@@ -410,14 +477,26 @@ export function planSeasonPass(save: SaveGame, donor: SaveGame): SeasonPassPlan 
     throw new Error(`this account's ${eventRoot} has no ${EVENT_LOGIC} component`);
   }
 
-  /* Purchase-shaped components are never copied. */
-  const names = componentNames(donor, season);
+  /*
+   * Identity is not data. `components[i].v.first` NAMES the component, so a
+   * write there is a rename, never a value update — even when the two saves
+   * disagree it must be left alone. Everything else is aligned by name (see
+   * `alignComponents`) so a positional diff can no longer land anywhere but on
+   * the account's own component.
+   *
+   * The guards are keyed on the ACCOUNT's indices, because after alignment
+   * index i *is* the account's component i.
+   */
+  const accountNames = componentNames(save, season);
   const protectedPrefixes: string[] = [];
-  for (const [idx, name] of names) {
+  for (const [idx, name] of accountNames) {
+    protectedPrefixes.push(`${eventRoot}.components[${idx}].v.first`);
     if (PURCHASE_COMPONENTS.includes(name)) {
       protectedPrefixes.push(`${eventRoot}.components[${idx}]`);
     }
   }
+
+  const { aligned, unmatchedDonor, unmatchedAccount } = alignComponents(donorEvent, deviceEvent);
 
   const ctx: WalkCtx = {
     ops: [],
@@ -426,7 +505,27 @@ export function planSeasonPass(save: SaveGame, donor: SaveGame): SeasonPassPlan 
     protectedFields: new Set(PURCHASE_FIELDS),
     mismatches: [],
   };
-  walk(donorEvent, deviceEvent, eventRoot, ctx);
+  walk(aligned, deviceEvent, eventRoot, ctx);
+
+  if (unmatchedDonor.length) {
+    notes.push(
+      `the donor holds ${unmatchedDonor.length} component(s) this account does not have ` +
+        `(${unmatchedDonor.slice(0, 4).join(", ")}) — left out, because a component's array ` +
+        `position carries no meaning and inventing one would be a guess.`,
+    );
+  }
+  if (unmatchedAccount.length) {
+    notes.push(
+      `this account holds ${unmatchedAccount.length} component(s) the donor lacks ` +
+        `(${unmatchedAccount.slice(0, 4).join(", ")}) — left exactly as found.`,
+    );
+  }
+  if (saveIdx !== donorIdx) {
+    notes.push(
+      `the account keeps ${EVENT_LOGIC} at component ${saveIdx} (the donor holds it at ` +
+        `${donorIdx}); every write targets the account's own index, matched by component name.`,
+    );
+  }
 
   if (ctx.mismatches.length) {
     notes.push(

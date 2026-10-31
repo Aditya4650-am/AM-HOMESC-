@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useStudio } from "../lib/studio.tsx";
+import { downloadSave } from "../lib/api.ts";
 import {
   Badge,
   Button,
@@ -32,8 +33,30 @@ export function ReviewSection() {
 
   const netBytes = lastApply ? lastApply.outputBytes - lastApply.inputBytes : 0;
 
-  const download = () => {
-    window.location.href = "/api/export";
+  /**
+   * Export the ACTIVE session.
+   *
+   * This used to navigate to a bare `/api/export`. That has two faults: the
+   * activation token travels in the `x-hs-token` header, which a top-level
+   * navigation cannot send, and the route then falls back to "the newest
+   * session" — so with a licence gate on, the button either 401'd or handed
+   * back someone else's save. Fetch the session explicitly and save the blob.
+   */
+  const download = async () => {
+    try {
+      const blob = await downloadSave(overview?.meta.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "SaveGame.db";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.ok("Save exported", "SaveGame.db downloaded from the active session.");
+    } catch (err) {
+      toast.err("Export failed", err instanceof Error ? err.message : String(err));
+    }
   };
 
   if (!overview) return <EmptyState title="No save loaded" />;
@@ -208,7 +231,7 @@ export function ReviewSection() {
 
       <Panel title={<PanelHead tone="gold" icon="⬇️">Export</PanelHead>}>
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="gold" onClick={download}>
+          <Button variant="gold" onClick={() => void download()}>
             Download SaveGame.db
           </Button>
         </div>
@@ -217,7 +240,7 @@ export function ReviewSection() {
             variant="subtle"
             onClick={() => {
               void navigator.clipboard
-                .writeText(window.location.origin + "/api/export")
+                .writeText(`${window.location.origin}/api/export?sessionId=${overview?.meta.id ?? ""}`)
                 .then(() => toast.ok("Link copied"));
             }}
           >
