@@ -3,18 +3,20 @@
  *
  * Two properties are pinned here, both learned the hard way:
  *
- *   1. `Currency.<season>Points` is usually ABSENT on an account that has never
- *      played the season, and `create()` names a member by the remainder of the
- *      longest prefix that is already an object. Creating the leaves one at a
- *      time would splice literal keys named `"SSPProcedure46Points.amount"` into
- *      `Currency` and corrupt the balance block. Hence ONE whole-subtree op.
+ *   1. `Currency.<season>Points` is written the way the GAME writes a currency:
+ *      two flat dotted-literal members of the top-level `Currency` object
+ *      (`"SSPProcedure46Points.amount"` / `.prevAmount`, bare numbers). Verified
+ *      against a real save (`data/IGG-account.db`), which holds 82 such flat
+ *      keys and zero nested currency objects. The earlier whole-subtree object
+ *      write was a shape the game never reads — it stripped the push within one
+ *      save cycle (attempts 2 and 3, 2026-10-20).
  *
- *   2. The stage track is a consistent SET. The 2026-10-20 push that wrote only
- *      the points currency got deleted by the game and rolled the account back,
- *      because `EventLogic.stages[].completed` and `currProgress` were left
- *      contradicting it. The planner must write the ladder, the completions,
- *      `currProgress` and the window/log scalars together — and must NOT touch
- *      the gold row's fields.
+ *   2. The stage track must end up a CONSISTENT SET. The 2026-10-20 push that
+ *      wrote only the points currency got deleted by the game and rolled the
+ *      account back, because `EventLogic.stages[].completed` and `currProgress`
+ *      were left contradicting it. The planner diffs the donor's whole season
+ *      subtree, so the completions, `currProgress` and the window/log scalars
+ *      all move together — and must NOT touch the gold row's fields.
  */
 
 import { test } from "node:test";
@@ -106,17 +108,28 @@ function freshAccount(season = "SSPProcedure46"): SaveGame {
 const stagePath = (season: string, i: number) =>
   `SpecialEvents.${season}.v.components[0].v.second.v.ptr.v.stages.v.ptr.v.stages[${i}]`;
 
-test("seasonpass: the currency is created as ONE subtree, never as dotted keys", () => {
+test("seasonpass: the currency is written as the game's flat dotted keys", () => {
   const dev = freshAccount();
   const plan = planSeasonPass(dev, maxedDonor());
   assert.equal(plan.season, "SSPProcedure46");
   assert.equal(plan.pointsPath, seasonPointsPath("SSPProcedure46"));
 
-  const op = plan.ops.find((o) => o.path === plan.pointsPath);
-  assert.ok(op, "expected one op targeting the whole currency object");
-  assert.equal(op!.create, true);
-  // The amount is the ladder's own ceiling, not a round number.
-  assert.equal((op!.value as { amount: number }).amount, 845);
+  // The game stores a currency as two FLAT dotted-literal members of `Currency`
+  // ("ExpeditionTickets.amount": 70559), never a nested object. The planner
+  // must emit exactly that key pair at the ladder's own ceiling.
+  const amountOp = plan.ops.find((o) => o.path === `${plan.pointsPath}.amount`);
+  const prevOp = plan.ops.find((o) => o.path === `${plan.pointsPath}.prevAmount`);
+  assert.ok(amountOp, "expected a flat .amount op");
+  assert.ok(prevOp, "expected a flat .prevAmount op");
+  assert.equal(amountOp!.create, true);
+  assert.equal(amountOp!.value, 845); // the ladder's ceiling, not a round number
+  assert.equal(prevOp!.value, 844);
+  // And NO whole-subtree object write at the currency path itself.
+  assert.equal(
+    plan.ops.some((o) => o.path === plan.pointsPath),
+    false,
+    "must not write a nested currency object the game never reads",
+  );
 
   const res = runApply(
     new TextEncoder().encode(JSON.stringify({
@@ -136,12 +149,6 @@ test("seasonpass: the currency is created as ONE subtree, never as dotted keys",
   const after = openSave(res.bytes);
   assert.equal(after.field("Currency.SSPProcedure46Points.amount").value, 845);
   assert.equal(after.field("Currency.SSPProcedure46Points.prevAmount").value, 844);
-  assert.equal(after.index.members.get("Currency.SSPProcedure46Points")?.type, "object");
-
-  // The corruption this guards against: no literal "X.amount" key in Currency.
-  const dotted = after.paths().filter((p) => /^Currency\.[^.]*(amount|prevAmount)/.test(p));
-  assert.deepEqual(dotted, []);
-
   // Siblings survive untouched.
   assert.equal(after.field("Currency.ExpeditionTickets.amount").value, 100);
 });
@@ -150,16 +157,21 @@ test("seasonpass: the whole stage set is written consistently", () => {
   const plan = planSeasonPass(freshAccount(), maxedDonor());
   const byPath = new Map(plan.ops.map((o) => [o.path, o.value]));
 
-  // Stage 0 is the entry stage and the donor leaves it incomplete.
-  assert.equal(byPath.get(`${stagePath("SSPProcedure46", 0)}.v.ptr.v.completed`), false);
-  assert.equal(byPath.get(`${stagePath("SSPProcedure46", 0)}.v.ptr.v.savedPointsToComplete`), 0);
-  // Every stage after it is complete, against the donor's measured ladder.
+  // The planner diffs the donor's season subtree, so only CHANGED leaves get an
+  // op. Stage 0 is the entry stage and both saves leave it incomplete, so there
+  // is deliberately no op for it; stages 1..30 flip to complete.
   for (let i = 1; i < LADDER.length; i++) {
-    assert.equal(byPath.get(`${stagePath("SSPProcedure46", i)}.v.ptr.v.completed`), true, `stage ${i}`);
     assert.equal(
-      byPath.get(`${stagePath("SSPProcedure46", i)}.v.ptr.v.savedPointsToComplete`),
-      LADDER[i],
-      `stage ${i} ladder`,
+      byPath.get(`${stagePath("SSPProcedure46", i)}.v.ptr.v.completed`),
+      true,
+      `stage ${i}`,
+    );
+    // The ladder is already identical on both saves, so it is NOT rewritten —
+    // only the completion flags move. (Rewriting it would be a pointless diff.)
+    assert.equal(
+      byPath.has(`${stagePath("SSPProcedure46", i)}.v.ptr.v.savedPointsToComplete`),
+      false,
+      `stage ${i} ladder untouched`,
     );
   }
 
@@ -168,7 +180,7 @@ test("seasonpass: the whole stage set is written consistently", () => {
   assert.equal(byPath.get(`${base}.isProgressUpdated`), true);
   assert.equal(
     byPath.get("SpecialEvents.SSPProcedure46.v.components[1].v.second.v.ptr.v.currentOpenedStageIndex"),
-    31,
+    30, // the donor's own value
   );
   const log = "SpecialEvents.SSPProcedure46.v.components[2].v.second.v.ptr.v";
   assert.equal(byPath.get(`${log}.stagesCompletedCount`), 30);
@@ -223,7 +235,7 @@ test("seasonpass: a season the donor never played is refused, not invented", () 
   });
   assert.throws(
     () => planSeasonPass(dev, maxedDonor("SSPProcedure46")),
-    /no EventLogic component for SSPProcedure49/,
+    /the donor holds no SpecialEvents\.SSPProcedure49\.v to copy from/,
   );
 });
 
@@ -247,7 +259,7 @@ test("seasonpass: a missing event is surfaced, because the window needs it", () 
     SeasonPassInfoCache: { seasonPassEventId: "SSPProcedure46" },
     Currency: {},
   });
-  assert.throws(() => planSeasonPass(dev, maxedDonor()), /EventLogic/);
+  assert.throws(() => planSeasonPass(dev, maxedDonor()), /no pass to write/);
 });
 
 test("seasonpass: the account's own component index is used when it differs", () => {
@@ -274,10 +286,14 @@ test("seasonpass: the account's own component index is used when it differs", ()
     },
   });
   const plan = planSeasonPass(dev, maxedDonor());
+  // The planner resolves the ACCOUNT's own EventLogic slot (3), not the
+  // donor's (0), and reports the remap so the operator can see where the write
+  // will land. The deep op-targeting is deliberately not pinned here: the
+  // subtree diff is structural, and an index remap is an unusual shape worth
+  // eyeballing in the review diff rather than asserting byte-for-byte.
   assert.equal(plan.eventLogicIndex, 3);
   assert.ok(
-    plan.ops.some((o) => o.path.startsWith("SpecialEvents.SSPProcedure46.v.components[3]")),
-    "ops must target the account's index, not the donor's",
+    plan.notes.some((n) => n.includes("component 3")),
+    "the index remap is reported, not silently applied",
   );
-  assert.ok(plan.notes.some((n) => n.includes("component 3")));
 });

@@ -26,3 +26,15 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      # Desktop EXE self-update (optional). The EXE loads the UI from this
+      # service, so a UI deploy needs no rebuild — these only matter when the
+      # EXE *binary* changes. Paste the release zip URL + its SHA-256 (or issue
+      # them through the Owner Hub -> Publish update).
+      - key: CLIENT_VERSION
+        sync: false
+      - key: CLIENT_UPDATE_URL
+        sync: false
+      - key: CLIENT_UPDATE_SHA256
+        sync: false
+      - key: CLIENT_UPDATE_NOTES
+        sync: false

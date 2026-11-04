@@ -55,6 +55,7 @@ import {
   createSession,
   listSessions,
   resolveSession,
+  setActiveSession,
   type SaveSession,
 } from "./session.ts";
 import {
@@ -85,6 +86,39 @@ const PORT = Number(process.env.PORT ?? process.env.HC_PORT ?? 8787);
  */
 const HOST = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
 const MAX_BODY = 96 * 1024 * 1024; // base64 inflates by ~4/3
+
+/** Reported by /api/health and used as the default client release version. */
+const APP_VERSION = process.env.CLIENT_VERSION?.trim() || "0.2.0";
+
+/**
+ * The published desktop EXE release.
+ *
+ * The EXE is a thin shell that loads the UI from THIS server, so a UI deploy
+ * reaches every installed copy with no rebuild. Only a change to the EXE
+ * binary ships a release zip; the web app polls `/api/update` for this record
+ * and calls the native installer when the server's version is newer. Seeded
+ * from env so a deploy can publish without a code change; the Owner Hub can
+ * also publish at runtime.
+ */
+interface ClientRelease {
+  version: string;
+  downloadUrl: string;
+  sha256: string;
+  notes: string;
+  publishedAt: number;
+}
+
+function envRelease(): ClientRelease {
+  return {
+    version: APP_VERSION,
+    downloadUrl: (process.env.CLIENT_UPDATE_URL ?? "").trim(),
+    sha256: (process.env.CLIENT_UPDATE_SHA256 ?? "").trim().toLowerCase(),
+    notes: (process.env.CLIENT_UPDATE_NOTES ?? "").trim(),
+    publishedAt: Date.now(),
+  };
+}
+
+let clientRelease: ClientRelease = envRelease();
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -251,9 +285,27 @@ interface CardsGrantBody {
   refreshIntegrity?: boolean;
 }
 
+interface CardsSendBody {
+  sessionId?: string;
+  /** ADB device serial the sending account runs on. */
+  serial?: string;
+  /** Recipient device save ids (friends) to send to. */
+  friends?: string[];
+  /** Card ids such as `card_19` to send to every friend. */
+  cards?: string[];
+  refreshIntegrity?: boolean;
+}
+
 interface OwnerBody {
   passcode?: string;
-  action?: "issue" | "list" | "revoke" | "restore" | "reset-devices" | "delete";
+  action?:
+    | "issue"
+    | "list"
+    | "revoke"
+    | "restore"
+    | "reset-devices"
+    | "delete"
+    | "publish-update";
   plan?: "trial" | "week" | "month" | "year" | "lifetime" | "custom";
   days?: number;
   hours?: number;
@@ -262,13 +314,26 @@ interface OwnerBody {
   note?: string;
   key?: string;
   bindDevice?: string;
+  /** publish-update: the release zip the EXE downloads. */
+  downloadUrl?: string;
+  sha256?: string;
+  notes?: string;
+  version?: string;
 }
 
 async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const route = `${req.method} ${url.pathname}`;
 
   if (route === "GET /api/health") {
-    sendJson(res, 200, { ok: true, app: "Homescapes Save Studio", version: "0.1.0" });
+    sendJson(res, 200, { ok: true, app: "Homescapes Save Studio", version: APP_VERSION });
+    return;
+  }
+
+  // The desktop EXE's self-update check. Open (no token) so the lock screen
+  // and any pre-auth state can read it; it only ever reveals a version and a
+  // public download URL — never anything secret.
+  if (route === "GET /api/update") {
+    sendJson(res, 200, { ok: true, release: clientRelease });
     return;
   }
 
@@ -362,7 +427,28 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       sendJson(res, done ? 200 : 404, { ok: done, error: done ? undefined : "no such key" });
       return;
     }
-    throw new SessionError("`action` must be issue | list | revoke | restore | reset-devices | delete", 400);
+    if (body.action === "publish-update") {
+      // Publish a new desktop EXE release. Requires a real https download URL
+      // and a 64-hex SHA-256 so the client can verify the bytes before it
+      // swaps itself out. The version defaults to the server's own.
+      const downloadUrl = String(body.downloadUrl ?? "").trim();
+      const sha256 = String(body.sha256 ?? "").trim().toLowerCase();
+      const notes = String(body.notes ?? "").trim();
+      const version = String(body.version ?? "").trim() || APP_VERSION;
+      if (!/^https:\/\//i.test(downloadUrl)) {
+        throw new SessionError("downloadUrl must be an https:// URL", 400);
+      }
+      if (!/^[0-9a-f]{64}$/.test(sha256)) {
+        throw new SessionError("sha256 must be 64 hex characters", 400);
+      }
+      clientRelease = { version, downloadUrl, sha256, notes, publishedAt: Date.now() };
+      sendJson(res, 200, { ok: true, release: clientRelease });
+      return;
+    }
+    throw new SessionError(
+      "`action` must be issue | list | revoke | restore | reset-devices | delete | publish-update",
+      400,
+    );
   }
 
   // Everything below this line edits a save, so it needs a valid token.
@@ -490,14 +576,19 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       throw new SessionError((err as Error).message, 400);
     }
 
-    const source = createSession("content-source", srcBytes);
+    const source = createSession("content-source", srcBytes, { active: false });
 
     const reply = await callBridge(["pull", "--serial", body.serial]);
     if (!(reply.ok && reply.b64)) {
       sendJson(res, 400, reply);
       return;
     }
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64));
+    // The pulled client save becomes the edit target ONLY if the clone lands.
+    // Creating it active up-front meant a failed apply (below) left the active
+    // pointer swapped while the UI still wrote to the previous session — a
+    // split-brain where Push exported stale pre-clone bytes. Keep it passive
+    // and flip the pointer on success.
+    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), { active: false });
 
     const ops: EditOp[] = [];
     const perRoot: Array<{ root: string; fields: number; mode: string; skipped: number }> = [];
@@ -682,6 +773,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     for (const r of perRoot) r.fields = appliedByRoot.get(r.root) ?? 0;
 
+    // Only now — the clone actually landed — does this pulled save become the
+    // session every read and Push targets. On the refusal path above the active
+    // pointer is untouched, so the UI keeps operating on the session it holds.
+    if (result.ok) setActiveSession(target.id);
+
     sendJson(res, result.ok ? 200 : 400, {
       ok: result.ok,
       source: srcPath,
@@ -785,14 +881,17 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } catch {
       throw new SessionError(`the built-in account is missing: ${IGG_SOURCE}`, 400);
     }
-    const donor = createSession("season-pass-source", srcBytes);
+    const donor = createSession("season-pass-source", srcBytes, { active: false });
 
     const reply = await callBridge(["pull", "--serial", body.serial]);
     if (!(reply.ok && reply.b64)) {
       sendJson(res, 400, { ok: false, error: reply.error ?? "could not read the device save" });
       return;
     }
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64));
+    // Passive until the season-pass set actually applies — a failed plan or
+    // apply must not steal the active pointer away from the session the UI is
+    // editing (see clone-content above).
+    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), { active: false });
 
     let plan;
     try {
@@ -814,6 +913,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       });
       return;
     }
+    // The write succeeded: this pulled save is now the one the UI reads/pushes.
+    setActiveSession(target.id);
 
     // Push now — this route is the one-tap action, not a staged session.
     const tmp = join(DIST, "..", ".push-tmp.db");
@@ -957,6 +1058,33 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         setCount: SET_COUNT,
       },
     });
+    return;
+  }
+
+  /* --------------------------------------------------- cards send (live) --
+   * The Cards tab's REAL delivery path. Every (card, friend) pair is one
+   * Playrix `SendBox` round-trip through the sending device, so the recipient
+   * gets a genuine in-game "card received" popup instead of a silent save edit.
+   */
+  if (route === "POST /api/cards/send") {
+    const body = await readJson<CardsSendBody>(req);
+    if (!body.serial) throw new SessionError("`serial` is required", 400);
+    if (!Array.isArray(body.friends) || body.friends.length === 0) {
+      throw new SessionError("`friends` must be a non-empty array of recipient save ids", 400);
+    }
+    if (!Array.isArray(body.cards) || body.cards.length === 0) {
+      throw new SessionError("`cards` must be a non-empty array of card ids (e.g. card_01)", 400);
+    }
+    const reply = await callBridge([
+      "cards-send-all",
+      "--serial",
+      body.serial,
+      "--cards",
+      body.cards.join(","),
+      "--friends",
+      body.friends.join(","),
+    ]);
+    sendJson(res, reply.ok ? 200 : 400, reply);
     return;
   }
 

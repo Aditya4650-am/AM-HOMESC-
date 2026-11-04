@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { api } from "../lib/api.ts";
 import { useStudio } from "../lib/studio.tsx";
 import { useToast } from "../components/ui.tsx";
 
@@ -7,9 +6,17 @@ import { useToast } from "../components/ui.tsx";
  * Shared Save / Push action row for every AM-style section.
  *
  * - Save validates and persists what is actually staged (never pretends).
- * - Push applies pending edits first, then writes the save to the connected
- *   device — or says honestly that no device is connected. It never
- *   simulates a live-game update.
+ * - Push hands the ENTIRE device write to the one shared `push()` in the
+ *   studio — the same code path the title bar uses. There used to be a second,
+ *   divergent push here that skipped the device-serial gate and never touched
+ *   the native ADB bridge, so a desktop EXE press behaved differently from the
+ *   title bar. Delegating keeps both buttons byte-for-byte identical.
+ *
+ * `onSave` here is ONLY the Save button's handler. A section that keeps
+ * persistence in LOCAL state (like cosmetics) additionally registers a silent
+ * push-flush with the studio itself (`setSectionSave`) so the title-bar Push
+ * can commit it too — see CosmeticsKindSection. Registering `onSave` here
+ * instead would re-pop its "Nothing to save" toast on every empty Push.
  */
 export function AmActions({
   onSave,
@@ -21,7 +28,7 @@ export function AmActions({
   saveDisabled?: boolean;
   saveLabel?: string;
 }) {
-  const { pending, applyPending, applying, serial, pushLog, overview } = useStudio();
+  const { pending, applyPending, applying, push, pushLog } = useStudio();
   const toast = useToast();
   const [pushing, setPushing] = useState(false);
 
@@ -42,41 +49,12 @@ export function AmActions({
     if (pushing || applying) return;
     setPushing(true);
     try {
-      // 0) A section with its own persistence (cosmetics grants, equips) must
-      //    land BEFORE the push. Skipping this used to push a save that never
-      //    contained the staged unlock — the tab showed "staged" while the
-      //    game showed nothing.
-      if (onSave) {
-        const saved = await onSave();
-        if (!saved) return; // onSave already explained the refusal
-      }
-      // 1) Persist staged field edits first — a push always sends saved bytes.
-      if (pending.size > 0) {
-        const ok = await applyPending();
-        if (!ok) return; // applyPending already explained the refusal
-      }
-      // 2) Honest device gate.
-      if (!serial) {
-        toast.warn(
-          "No device connected",
-          "Connect an emulator or device over ADB, then press Push again.",
-        );
-        pushLog("warn", "Push skipped — no device connected");
-        return;
-      }
-      // 3) Real push over ADB.
-      pushLog("info", `Pushing save to ${serial}…`);
-      const res = await api.push(serial, true, overview?.meta.id);
-      if (res.error) {
-        toast.err("Push failed", res.error);
-        pushLog("err", "Push failed", res.error);
-        return;
-      }
-      const bits = [res.file ?? "save pushed"];
-      if (res.toolBackup) bits.push("tool backup kept");
-      if (res.relaunched) bits.push("game relaunched");
-      toast.ok("Pushed to device", bits.join(" · "));
-      pushLog("ok", `Pushed save to ${serial}`, res.relaunched ? "game relaunched" : undefined);
+      // The shared push() flushes the section's registered push-flush (local
+      // staged state like cosmetics), then any staged field edits, enforces the
+      // device-serial gate (so a save pulled from device A is never written to
+      // device B), and uses the native ADB bridge on desktop. One code path,
+      // one set of gates, both buttons.
+      await push();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       toast.err("Push failed", msg);

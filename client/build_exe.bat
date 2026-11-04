@@ -19,12 +19,12 @@ if errorlevel 1 (
   echo [build] PyInstaller failed
   exit /b 1
 )
-powershell -NoProfile -Command "Compress-Archive -Path 'dist\Homescapes Save Studio' -DestinationPath 'dist\HOMESC.SAVE.STUDIO.zip' -Force"
+powershell -NoProfile -Command "if (Test-Path 'dist\HOMESC.SAVE.STUDIO.zip') { Remove-Item 'dist\HOMESC.SAVE.STUDIO.zip' -Force }; Compress-Archive -Path 'dist\Homescapes Save Studio' -DestinationPath 'dist\HOMESC.SAVE.STUDIO.zip' -Force"
 if errorlevel 1 (
   echo [build] zip failed
   exit /b 1
 )
 echo [build] done -> dist\HOMESC.SAVE.STUDIO.zip
 echo [build] sha256:
-powershell -NoProfile -Command "Get-FileHash 'dist\HOMESC.SAVE.STUDIO.zip' -Algorithm SHA256 | Select-Object -ExpandProperty Hash"
+powershell -NoProfile -Command "$h=(Get-FileHash 'dist\HOMESC.SAVE.STUDIO.zip' -Algorithm SHA256).Hash; $s=(Get-Item 'dist\HOMESC.SAVE.STUDIO.zip').Length; Write-Output ('sha256=' + $h); Write-Output ('bytes=' + $s)"
 endlocal

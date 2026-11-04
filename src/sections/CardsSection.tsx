@@ -147,7 +147,8 @@ const tileOf = (num: number, stock: number, kind: "new" | "topped"): DeliveredTi
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function CardsSection() {
-  const { overview, values, pending, setPending, clearPending, pushLog, reload } = useStudio();
+  const { overview, values, pending, setPending, clearPending, pushLog, reload, serial } =
+    useStudio();
   const toast = useToast();
 
   const [fields, setFields] = useState<DiscoveredField[]>([]);
@@ -399,7 +400,7 @@ export function CardsSection() {
   /** Tick order is the catalog's own order, so plans read `#1, #2, #9 …`. */
   const selectedCards = [...selected].sort((a, b) => a - b);
 
-  const onSend = () => {
+  const onSend = async () => {
     if (selectedCards.length === 0) {
       toast.warn("No cards selected", "Tick at least one card in the grid first.");
       return;
@@ -421,16 +422,29 @@ export function CardsSection() {
         return;
       }
       const d = Math.min(DELAY_MAX, Math.max(DELAY_MIN, Math.floor(Number(delay) || DELAY_DEFAULT)));
-      const plan =
-        `${selectedCards.length} card${selectedCards.length === 1 ? "" : "s"} × ` +
-        `${recipients.length} friend${recipients.length === 1 ? "" : "s"} × ${copies} cop${copies === 1 ? "y" : "ies"}` +
-        ` · ${d} ms delay`;
-      toast.info(
-        "Friend delivery needs the game server",
-        "This tool edits the save file offline — it has no Playrix server connection, " +
-          "so card boxes cannot actually be delivered. Nothing was staged.",
+      pushLog(
+        "info",
+        "Sending cards via Playrix SendBox",
+        `${selectedCards.length} card${selectedCards.length === 1 ? "" : "s"} → ${recipients.length} recipient${
+          recipients.length === 1 ? "" : "s"
+        } · ${copies} cop${copies === 1 ? "y" : "ies"}`,
       );
-      pushLog("warn", "Friend send not executed — no game-server connection", plan);
+      const res = await api.cardsSend({
+        serial: serial ?? "",
+        friends: recipients,
+        cards: selectedCards.map((n) => cardIdOf(n)),
+      });
+      if (res.ok) {
+        pushLog("ok", "All cards sent", `${res.sent}/${res.total} SendBox deliveries confirmed`);
+        toast.ok(
+          "Cards sent",
+          `${res.sent}/${res.total} cards delivered through Playrix SendBox — each one got its own ` +
+            "card-received popup.",
+        );
+        return;
+      }
+      pushLog("err", "Card send batch finished with failures", JSON.stringify(res.failed ?? []).slice(0, 1200));
+      toast.err("Card send finished", `${res.sent ?? 0}/${res.total ?? 0} delivered · ${(res.failed ?? []).length} failed.`);
       return;
     }
 

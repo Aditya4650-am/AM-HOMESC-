@@ -32,8 +32,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -41,10 +43,19 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib import parse as _urlparse
 from urllib import request as _urlrequest
+
+# The Playrix TS frame codec (AES + ts-id tag + LocalInfo decode). Sits next to
+# this file so the desktop EXE bundles it; imported lazily-guarded so the ADB
+# bridge still works even if it is missing, and cards report a clear error.
+try:
+    import ts_playrix_core as _tsx
+except Exception:  # pragma: no cover
+    _tsx = None
 
 APP_NAME = "Homescapes Save Studio"
 APP_VERSION = "0.1.0"
@@ -173,7 +184,45 @@ _ACTIVE_PACKAGE: dict[str, str] = {}
 
 # ── adb discovery ────────────────────────────────────────────────────────────
 
-_EMULATOR_PORTS = [5555, 5554, 62001, 62025, 21503, 21513, 21523, 21533, 21543, 21553, 21563, 21573, 21583, 21593, 7555, 5037, 5585, 5597, 21504, 21505]
+# Emulator console/ADB ports, grouped so a raw serial can be labelled with the
+# emulator and instance number the operator actually recognises.
+#   MEmu        21503 + 10n (instances 1..10), plus 21503/21504/21505 for a
+#                 default single-instance install
+#   LDPlayer    62001 / 62025
+#   Nox         7555
+#   BlueStacks  5555 / 5554
+# 5037 is adb's OWN server port and is deliberately NOT probed: `adb connect
+# 127.0.0.1:5037` attaches to the daemon, not to a device, and yields a
+# phantom entry. 5585/5597 were never a real emulator port either.
+_EMULATOR_PORTS = [
+    21503, 21513, 21523, 21533, 21543, 21553, 21563, 21573, 21583, 21593,
+    21504, 21505,
+    62001, 62025,
+    7555,
+    5555, 5554,
+]
+
+_MEMU_PORTS = {21503: 1, 21513: 2, 21523: 3, 21533: 4, 21543: 5,
+               21553: 6, 21563: 7, 21573: 8, 21583: 9, 21593: 10}
+_LDPLAYER_PORTS = {62001: 1, 62025: 2}
+
+
+def _label_for(serial: str) -> str:
+    """Human label for a serial — 'MEmu Instance 2' beats '127.0.0.1:21513'."""
+    if ":" in serial:
+        try:
+            port = int(serial.rsplit(":", 1)[1])
+        except ValueError:
+            return serial
+        if port in _MEMU_PORTS:
+            return f"MEmu Instance {_MEMU_PORTS[port]}"
+        if port in _LDPLAYER_PORTS:
+            return f"LDPlayer {_LDPLAYER_PORTS[port]}"
+        if port == 7555:
+            return "Nox Player"
+        if port in (5554, 5555):
+            return "Android Emulator"
+    return serial
 
 
 def _find_adb() -> str | None:
@@ -252,8 +301,19 @@ def _adb_devices(adb: str) -> list[dict]:
         if not line or "\t" not in line:
             continue
         serial, state = line.split("\t", 1)
-        if state.strip() == "device":
-            result.append({"id": serial.strip(), "label": serial.strip()})
+        serial = serial.strip()
+        state = state.strip()
+        # Only a fully ONLINE device can be pulled from. `offline` /
+        # `unauthorized` / `no permissions` used to be dropped silently, which
+        # presented as a bare "No device detected" with no reason — surface
+        # them as a labelled, disabled-looking entry instead.
+        if state == "device":
+            result.append({"id": serial, "label": _label_for(serial)})
+        elif state in ("offline", "unauthorized", "no permissions", "authorizing"):
+            result.append({
+                "id": serial,
+                "label": f"{_label_for(serial)} — {state}",
+            })
     return result
 
 
@@ -414,6 +474,241 @@ def _packages_for(serial: str) -> list[str]:
 
 # ── bridge ───────────────────────────────────────────────────────────────────
 
+# ── cards (live game API) ─────────────────────────────────────────────────────
+# Sending a card to yourself or a friend must travel Playrix's own SendBox, so
+# the "card received" inbox/notification actually appears in-game — a save edit
+# can only describe cards a city already holds, never deliver one. The frame
+# codec lives in ts_playrix_core; these are the credentials + payload pieces.
+
+# The Homescapes game API host and the active card-album event. Playrix serves
+# each title on its own host and each card event has its own id/end-time, so
+# every value is a default only — the web UI passes the real values from the
+# server's HC_GAME_* config, which is why tuning them never needs a rebuild.
+GAME_HOST_DEFAULT = "homescapes.playrix.com"
+GAME_BVER = "9.2.601.10100292"
+GAME_GVER = "9.2.5"
+GAME_PVER = "F31A29B4"
+GAME_USER_AGENT = "okhttp/3.12.13"
+
+_API1_SIGN_SECRETS: dict[str, str] = {
+    "homescapes.playrix.com": "",
+}
+_API1_SIGN_FALLBACKS: list[str] = [
+    "",
+    "c4bea4c191a444c2993cb50b640f6063",
+    "hs+7d5d6b1e53018433bbf0bf80d0d13327e72af3f5fafcb7ab09a7d2cbaec81ad7",
+    "hs+f47bcff41bda03a679e0df714f0339a4c99840a0e366a653f6a6957bf67f264c",
+]
+CARD_COL_ID_DEFAULT = "7"            # card-album event id  (Township-derived)
+CARD_COL_ET_DEFAULT = 1794560400     # event end-time (unix; API accepts stale)
+
+# LocalInfo filenames to try, in order — the exact name varies by build.
+LOCAL_INFO_FILES = ("mLocalInfo.xml", "LocalInfo.xml", "mGameInfo.xml")
+
+# Pulled credentials per device serial; keyed so send/inbox reuse the token
+# without re-reading LocalInfo. The token never leaves this process.
+_CARD_CREDS: dict[str, dict] = {}
+
+
+def _card_config(config: dict | None) -> dict:
+    """Resolve host/event overrides from the UI (server env) over the defaults."""
+    c = config or {}
+    host = str(c.get("host") or GAME_HOST_DEFAULT).strip() or GAME_HOST_DEFAULT
+    col_id = str(c.get("colId") or "").strip() or CARD_COL_ID_DEFAULT
+    try:
+        col_et = int(c.get("colEt") or CARD_COL_ET_DEFAULT)
+    except Exception:
+        col_et = CARD_COL_ET_DEFAULT
+    return {"host": host, "colId": col_id, "colEt": col_et}
+
+
+def _api1_secret_for(host: str, endpoint: str, token: str) -> str:
+    s = _API1_SIGN_SECRETS.get(host, "")
+    if s:
+        return s
+    for fb in _API1_SIGN_FALLBACKS:
+        if fb:
+            return fb
+    return ""
+
+
+def _api1_signature(body_str: str, secret: str = "") -> str:
+    """X-Signature: lowercase hex SHA-1 over the exact request body bytes."""
+    return hashlib.sha1((secret + body_str).encode("utf-8", "replace")).hexdigest()
+
+
+def _api1_url(endpoint: str, host: str, bver: str, save_id: str = "", query: str = "") -> str:
+    url = f"https://{host}/api/1/{endpoint}"
+    qs = f"?bver={bver}"
+    if save_id:
+        qs += f"&saveId={save_id}"
+    if query:
+        qs += ("&" if "?" in qs else "?") + query.lstrip("?")
+    return url + qs
+
+
+def _card_api(
+    endpoint: str,
+    body: dict,
+    cfg: dict,
+    *,
+    bver: str,
+    fver: str,
+    token: str,
+    query: str = "",
+    save_id: str = "",
+) -> dict:
+    """One real POST to Playrix's /api/1 JSON endpoint (X-Signature + X-Request-ID)."""
+    body_str = json.dumps(body, separators=(",", ":"))
+    host = str(cfg.get("host") or GAME_HOST_DEFAULT).strip() or GAME_HOST_DEFAULT
+    url = _api1_url(endpoint, host, bver, save_id or "", query)
+    secret = _api1_secret_for(host, endpoint, token)
+    sig = _api1_signature(body_str, secret)
+    rid = f"{int(time.time() * 1000):013d}{random.randint(0, 999999999):09d}"
+    rq = _urlrequest.Request(
+        url,
+        data=body_str.encode("utf-8", "replace"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-request-id": rid,
+            "x-signature": sig,
+            "x-version": str(cfg.get("gver") or GAME_GVER),
+            "user-agent": GAME_USER_AGENT,
+        },
+    )
+    status = 0
+    raw = ""
+    try:
+        with _urlrequest.urlopen(rq, timeout=20) as resp:
+            status = int(resp.status)
+            raw = resp.read().decode("utf-8", "replace")
+    except Exception as exc:
+        status = int(getattr(exc, "code", 0) or 0)
+        raw = f"{type(exc).__name__}: {exc}"
+    resp_json: dict = {}
+    txt = raw.strip()
+    if txt[:1] in ("{", "["):
+        try:
+            resp_json = json.loads(txt)
+        except Exception:
+            resp_json = {}
+    return {
+        "ok": status in (200, 201, 204),
+        "status": status,
+        "resp": resp_json if isinstance(resp_json, dict) else {},
+        "error": "" if status in (200, 201, 204) else str(resp_json)[:200],
+        "raw": txt[:200],
+    }
+
+
+def _probe_host(host: str) -> dict:
+    """POST a tiny body at CheckCity to see if host+path is alive.
+
+    Pure routing probe — no token, no codec — so it answers in one glance:
+    401/403 = host + path correct (auth layer reached), 404 = wrong path,
+    a throw = wrong host / offline.
+    """
+    if _tsx is None:
+        return {"ok": False, "host": host, "url": "", "status": 0,
+                "error": "frame codec not available", "hint": ""}
+    url = _tsx.api_url("CheckCity", host)
+    rq = _urlrequest.Request(
+        url,
+        data=b"\x00\x01\x02\x03",
+        method="POST",
+        headers={"Content-Type": "application/octet-stream", "User-Agent": "hc-client"},
+    )
+    status = 0
+    try:
+        with _urlrequest.urlopen(rq, timeout=8) as resp:
+            status = resp.status
+    except Exception as exc:
+        status = int(getattr(exc, "code", 0) or 0)
+        if not status:
+            return {"ok": False, "host": host, "url": url, "status": 0,
+                    "error": str(exc)[:200], "hint": "network/DNS error — host is wrong"}
+    if status in (401, 403):
+        hint, ok = "host + path OK (auth layer reached)", True
+    elif status == 404:
+        hint, ok = "wrong API path on this host", False
+    else:
+        hint, ok = f"HTTP {status}", status == 200
+    return {"ok": ok, "host": host, "url": url, "status": status,
+            "error": "", "hint": hint}
+
+
+def _attr(attrs: str, name: str) -> str:
+    m = re.search(rf'\b{re.escape(name)}="([^"]*)"', attrs, re.I)
+    return m.group(1) if m else ""
+
+
+def _attr_first(tag: str, names: tuple[str, ...]) -> str:
+    for n in names:
+        v = _attr(tag, n)
+        if v:
+            return v
+    return ""
+
+
+def _parse_card_creds(xml: str) -> dict:
+    """Own account credentials out of a decoded LocalInfo document."""
+    aws = re.search(r"<AWS\b([^>]*)>", xml, re.I)
+    a = aws.group(1) if aws else ""
+    city = _attr(a, "cityId") or _attr(xml, "cityId") or _attr(xml, "cityid")
+    token = _attr(a, "token") or _attr(xml, "token")
+    ver = re.search(r"<Version\b([^>]*?)/?>", xml, re.I)
+    va = ver.group(1) if ver else ""
+    bver = _attr(va, "version") or _attr(xml, "version")
+    fver = _attr(va, "FVer") or _attr(xml, "fver") or _attr(xml, "FVer")
+    # Display name: a chat msg the city itself sent carries fromName.
+    name = ""
+    if city:
+        m = re.search(rf'<msg\b[^>]*\bfromId="{re.escape(city)}"[^>]*>', xml, re.I)
+        if m:
+            name = _attr(m.group(0), "fromName") or _attr(m.group(0), "fromname")
+    return {"cityId": city, "token": token, "bver": bver, "fver": fver,
+            "name": name, "pic": ""}
+
+
+def _parse_card_friends(xml: str, own: str) -> list[dict]:
+    """Friend roster from LocalInfo (id + display name + level). Drops self."""
+    out: dict[str, dict] = {}
+    for m in re.finditer(r"<([A-Za-z_][A-Za-z0-9_.:-]*)\b[^>]*>", xml):
+        tag = m.group(0)
+        if re.match(r"</?(?:InvitedFriends|Global|root|Save)\b", tag, re.I):
+            continue
+        fid = _attr_first(tag, ("city_id", "cityid", "fromid", "id"))
+        if not re.fullmatch(r"[A-Za-z0-9]+", fid):
+            continue
+        name = _attr_first(tag, ("city_name", "cityname", "name", "displayname",
+                                 "playername", "nickname", "nick"))
+        level_raw = _attr_first(tag, ("level", "citylevel", "playerlevel"))
+        if not name and not level_raw:
+            continue
+        level = int(level_raw) if level_raw.isdigit() else 0
+        prev = out.get(fid)
+        if not prev or (prev["name"] == fid and name != fid) or (prev["level"] == 0 and level > 0):
+            out[fid] = {"id": fid, "name": name or fid, "level": level}
+    if not out:  # variants that expose only cityId
+        for m in re.finditer(r'\bcityId="([A-Za-z0-9]+)"', xml, re.I):
+            fid = m.group(1)
+            out.setdefault(fid, {"id": fid, "name": fid, "level": 0})
+    out.pop(own, None)
+    return list(out.values())
+
+
+def _card_set(card_id: str) -> str:
+    """`card_12` → `set_02` (ten cards per set, matching the save's own ids)."""
+    m = re.match(r"card_0*(\d+)$", card_id)
+    n = int(m.group(1)) if m else 1
+    return f"set_{((n - 1) // 10) + 1:02d}"
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
 class ClientError(RuntimeError):
     """Raised for anything the user can act on; message is shown verbatim."""
 
@@ -469,6 +764,356 @@ class HomescapesClient:
                 _ACTIVE_PACKAGE[serial] = pkg
                 return {"ok": True, "package": pkg}
         raise ClientError("could not launch Homescapes: " + err.decode("utf-8", "replace").strip())
+
+    # ── auto-update ──────────────────────────────────────────────────────────
+    # The EXE is a thin shell: it loads the UI from the server, so a UI deploy
+    # reaches every installed copy with no rebuild. Only a change to the BINARY
+    # ships a release zip; the web app polls the server for it and calls
+    # installUpdate. version() lets the web app decide whether it is newer.
+
+    def version(self) -> str:
+        return APP_VERSION
+
+    def installUpdate(self, release: dict) -> dict:
+        """Download a verified release zip and swap this EXE in place.
+
+        The download's SHA-256 must match the published one or nothing is
+        written. A foldered (onedir) release swaps the whole install folder; a
+        single-file release swaps just the EXE. Either way a tiny .cmd does the
+        swap after this process exits, then relaunches.
+        """
+        try:
+            url = str(release["downloadUrl"])
+            expected = str(release.get("sha256", "")).lower().strip()
+            version = str(release.get("version", "")).strip()
+        except Exception:
+            return {"ok": False, "reason": "invalid release payload"}
+        if not url:
+            return {"ok": False, "reason": "no download url published"}
+        if not getattr(sys, "frozen", False):
+            return {"ok": False, "reason": "not packaged (dev run)"}
+
+        current_exe = Path(sys.executable).resolve()
+        install_dir = current_exe.parent
+
+        try:
+            req = _urlrequest.Request(url, headers={"User-Agent": "hc-client"})
+            with _urlrequest.urlopen(req, timeout=300) as resp:
+                payload = resp.read()
+        except Exception as exc:
+            return {"ok": False, "reason": f"download failed: {exc}"}
+
+        import hashlib
+
+        got = hashlib.sha256(payload).hexdigest()
+        if expected and got != expected:
+            return {"ok": False, "reason": f"checksum mismatch: got {got}, want {expected}"}
+
+        import io
+        import zipfile
+
+        if zipfile.is_zipfile(io.BytesIO(payload)):
+            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                names = zf.namelist()
+                if _release_zip_is_folder(names):
+                    return self._swap_folder_release(zf, install_dir, current_exe, version)
+                exe_names = [n for n in names if n.lower().endswith(".exe")]
+                if not exe_names:
+                    return {"ok": False, "reason": "no exe inside the release zip"}
+                new_exe = install_dir / f"{current_exe.stem}-{version or 'new'}.exe"
+                with zf.open(exe_names[0]) as src, open(new_exe, "wb") as out:
+                    out.write(src.read())
+                return self._begin_swap(new_exe, install_dir, current_exe, version)
+        # Bare-exe payload (not zipped) — legacy single-file release.
+        new_exe = install_dir / f"{current_exe.stem}-{version or 'new'}.exe"
+        new_exe.write_bytes(payload)
+        return self._begin_swap(new_exe, install_dir, current_exe, version)
+
+    def _swap_folder_release(self, zf, install_dir: Path, current_exe: Path, version: str) -> dict:
+        staged = Path(tempfile.mkdtemp(prefix="hc-update-"))
+        try:
+            zf.extractall(staged)
+        except Exception as exc:
+            return {"ok": False, "reason": f"extract failed: {exc}"}
+        entries = list(staged.iterdir())
+        # A release zipped as "Homescapes Save Studio/..." wraps everything in
+        # one top folder; descend into it so the tree lands on install_dir.
+        root = entries[0] if len(entries) == 1 and entries[0].is_dir() else staged
+        bat = install_dir / f"{current_exe.stem}-update.cmd"
+        bat.write_text(
+            _wait_then_swap_bat(str(root), str(install_dir), current_exe.name),
+            encoding="ascii",
+        )
+        return self._launch_updater(bat, install_dir, version)
+
+    def _begin_swap(self, new_exe: Path, install_dir: Path, current_exe: Path, version: str) -> dict:
+        bat = install_dir / f"{current_exe.stem}-update.cmd"
+        bat.write_text(
+            _swap_single_exe_bat(str(new_exe), str(install_dir / current_exe.name)),
+            encoding="ascii",
+        )
+        return self._launch_updater(bat, install_dir, version)
+
+    def _launch_updater(self, bat: Path, install_dir: Path, version: str) -> dict:
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", str(bat)],
+                cwd=str(install_dir),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                | getattr(subprocess, "DETACHED_PROCESS", 0),
+            )
+        except Exception as exc:
+            return {"ok": False, "reason": f"could not start updater: {exc}"}
+        # Give the .cmd a moment to start, then leave so it can swap us out.
+        threading.Timer(0.6, lambda: os._exit(0)).start()
+        return {"ok": True, "version": version}
+
+    # ── cards (live game API) ────────────────────────────────────────────────
+    # These speak Playrix's own SendBox/CheckCity so a delivered card really
+    # shows up in the in-game inbox. Host/event come from the config param
+    # (server env → web → here), the token comes from a prior cardsLoad, and
+    # nothing here reads or writes the save.
+
+    def _pull_raw_file(self, adb: str, serial: str, remote: str) -> bytes | None:
+        """Read any small file as root. Unlike _pull_privileged (which only
+        accepts save-shaped bytes) this takes whatever comes back, as long as
+        it is not a shell error — LocalInfo is XML/encoded, not a save."""
+        for args in (
+            ["-s", serial, "exec-out", "su", "-c", f"cat '{remote}'"],
+            ["-s", serial, "exec-out", "su", "0", "cat", remote],
+            ["-s", serial, "exec-out", "su", "-c", f'cat "{remote}"'],
+        ):
+            code, out, _ = _run_adb(adb, args, timeout=30)
+            if code == 0 and out and not _looks_like_shell_error(out):
+                return out
+        if remote.startswith("/data/data/"):
+            pkg = remote.split("/data/data/")[1].split("/")[0]
+            rel = remote.split(f"/data/data/{pkg}/", 1)[1]
+            code, out, _ = _run_adb(adb, ["-s", serial, "exec-out", "run-as", pkg, "cat", rel], timeout=30)
+            if code == 0 and out and not _looks_like_shell_error(out):
+                return out
+        return None
+
+    def _local_info_xml(self, serial: str) -> str:
+        """Find + pull + decode the device's LocalInfo. "" when absent."""
+        if _tsx is None:
+            raise ClientError("frame codec not available (ts_playrix_core missing)")
+        adb = _find_adb()
+        if not adb:
+            raise ClientError("adb not found - connect an emulator first")
+        _ensure_adb_ready(adb)
+        for pkg in _packages_for(serial):
+            if not _is_pkg_installed(adb, serial, pkg):
+                continue
+            for fname in LOCAL_INFO_FILES:
+                ordered: list[str] = []
+                for path in (_find_on_device(adb, serial, pkg, fname),
+                             *candidate_paths_for_package(pkg, fname)):
+                    if path and path not in ordered:
+                        ordered.append(path)
+                for remote in ordered:
+                    buf = self._pull_raw_file(adb, serial, remote)
+                    if buf and len(buf) >= 16:
+                        try:
+                            return _tsx.decode_local_info(buf)
+                        except ValueError:
+                            continue
+        return ""
+
+    def cardsTest(self, config: dict | None = None) -> dict:
+        """Probe the configured host — one glance at `status` tells you if the
+        host is right: 401/403 = OK, 404 = wrong path, 0 = wrong host."""
+        cfg = _card_config(config)
+        return _probe_host(cfg["host"])
+
+    def cardsLoad(self, serial: str, config: dict | None = None) -> dict:
+        """Decode LocalInfo, stash the token, and confirm it with CheckCity.
+
+        Returns the public account view only (cityId, versions, name, friends,
+        inbox count) — never the token, which stays in _CARD_CREDS.
+        """
+        if _tsx is None:
+            return {"ok": False, "error": "frame codec not available"}
+        cfg = _card_config(config)
+        try:
+            xml = self._local_info_xml(serial)
+        except ClientError as exc:
+            return {"ok": False, "error": str(exc)}
+        if not xml:
+            return {"ok": False,
+                    "error": "could not read LocalInfo — open Homescapes once, then Refresh"}
+        creds = _parse_card_creds(xml)
+        missing = [k for k in ("cityId", "token", "bver", "fver") if not creds[k]]
+        if missing:
+            return {"ok": False,
+                    "error": f"LocalInfo missing {', '.join(missing)} — open Homescapes once, then Refresh"}
+        view = {
+            "cityId": creds["cityId"],
+            "bver": creds["bver"],
+            "fver": creds["fver"],
+            "name": creds["name"],
+            "level": 0,
+            "friends": _parse_card_friends(xml, creds["cityId"]),
+            "boxes": 0,
+            "checkedAt": 0,
+            "checkError": None,
+        }
+        # Real CheckCity: proves the token works before the first send.
+        r = _card_api("CheckCity", {"cityId": creds["cityId"], "tz": 28800}, cfg,
+                      bver=creds["bver"], fver=creds["fver"], token=creds["token"],
+                      query=f"?cityId={creds['cityId']}")
+        if r.get("ok") and isinstance(r.get("resp"), dict):
+            result = r["resp"].get("result")
+            if isinstance(result, dict):
+                if isinstance(result.get("name"), str) and result["name"]:
+                    view["name"] = result["name"]
+                try:
+                    view["level"] = int(result.get("lvl") or 0)
+                except Exception:
+                    view["level"] = 0
+                boxes = result.get("boxes")
+                view["boxes"] = len(boxes) if isinstance(boxes, list) else 0
+                view["checkedAt"] = _now_ms()
+        else:
+            status = int(r.get("status") or 0)
+            view["checkError"] = (
+                "token rejected (401) — refresh LocalInfo" if status == 401
+                else f"CheckCity: {r.get('error') or 'HTTP ' + str(status)}"
+            )
+        _CARD_CREDS[serial] = {
+            "cityId": creds["cityId"], "token": creds["token"],
+            "bver": creds["bver"], "fver": creds["fver"],
+            "name": view["name"], "pic": "",
+            "host": cfg["host"], "colId": cfg["colId"], "colEt": cfg["colEt"],
+        }
+        return {"ok": True, **view}
+
+    def cardsSend(self, serial: str, to_city_id: str, card_id: str,
+                  config: dict | None = None) -> dict:
+        """Deliver one card via SendBox. Returns sent / rejected / error with a
+        human reason; 403 (anti-abuse cadence) is retried, 401 (bad token) is
+        not, because retrying cannot fix a token."""
+        if _tsx is None:
+            return {"ok": False, "status": "error", "error": "frame codec not available"}
+        if not re.fullmatch(r"card_\d{2,3}", str(card_id or "")):
+            return {"ok": False, "status": "error", "error": f"bad card id {card_id!r}"}
+        if not re.fullmatch(r"[A-Za-z0-9]{4,24}", str(to_city_id or "")):
+            return {"ok": False, "status": "error", "error": f"bad recipient id {to_city_id!r}"}
+        creds = _CARD_CREDS.get(serial)
+        if not creds:
+            return {"ok": False, "status": "error",
+                    "error": "load the account first (Refresh) before sending"}
+        # Config precedence: explicit param (current server env) → what
+        # cardsLoad stashed (host must match the load that minted the token)
+        # → built-in defaults.
+        if config:
+            cfg = _card_config(config)
+        elif creds.get("host"):
+            cfg = {"host": creds["host"], "colId": creds["colId"], "colEt": creds["colEt"]}
+        else:
+            cfg = _card_config(None)
+        col_id, col_et = cfg["colId"], cfg["colEt"]
+        box = {
+            "afg": 3,
+            "box_type": "collections_send_card",
+            "card_id": card_id,
+            "col_et": col_et,
+            "col_id": col_id,
+            "friend_type": "send_friend",
+            "from": {"city_id": creds["cityId"], "friend_city_name": creds["name"],
+                     "pic": creds.get("pic", "")},
+            "seed": str(10000 + random.randint(0, 89999)),
+            "sendCounter": 1,
+            "set_id": _card_set(card_id),
+            "to": to_city_id,
+            "type": "box",
+        }
+        body = {"cityId": creds["cityId"], "to_cityId": to_city_id,
+                "box": json.dumps(box, separators=(",", ":"))}
+        query = f"?cityId={creds['cityId']}"
+        retried = 0
+        for attempt in range(3):
+            r = _card_api("SendBox", body, cfg,
+                          bver=creds["bver"], fver=creds["fver"],
+                          token=creds["token"], query=query, save_id=creds["cityId"])
+            if r.get("ok") and isinstance(r.get("resp"), dict):
+                result = r["resp"].get("result")
+                if isinstance(result, dict):
+                    return {"ok": True, "status": "sent", "retried": retried}
+                if result is None:  # recipient city does not exist → dropped
+                    return {"ok": True, "status": "rejected", "retried": retried}
+                return {"ok": False, "status": "error", "retried": retried,
+                        "error": json.dumps(r["resp"])[:160]}
+            status = int(r.get("status") or 0)
+            if status == 403 and attempt < 2:
+                retried += 1
+                time.sleep(1.5)
+                continue
+            if status == 401:
+                return {"ok": False, "status": "error", "http": 401, "retried": retried,
+                        "error": "token rejected (401) — refresh LocalInfo"}
+            if status == 403:
+                return {"ok": False, "status": "error", "http": 403, "retried": retried,
+                        "error": "temporarily blocked (403) — increase delay"}
+            return {"ok": False, "status": "error", "http": status, "retried": retried,
+                    "error": r.get("error") or f"HTTP {status}"}
+        return {"ok": False, "status": "error", "retried": retried,
+                "error": "retries exhausted (403)"}
+
+    def cardsSendAll(self, serial: str, card_ids: list[str], friend_ids: list[str],
+                     config: dict | None = None) -> dict:
+        """Send every card in card_ids to every friend in friend_ids via SendBox.
+
+        Each (card, friend) pair is one real SendBox round-trip so the in-game
+        "card received" popup fires for the actual recipient. No warning dialogs,
+        no abort-on-first-failure — individual failures are reported per pair.
+        """
+        sent = 0
+        failed: list[dict] = []
+        results: list[dict] = []
+        if not friend_ids:
+            return {"ok": False, "status": "error", "error": "no friends to send to"}
+        cards = [c for c in (card_ids or []) if re.fullmatch(r"card_\d{2,3}", str(c))]
+        if not cards:
+            return {"ok": False, "status": "error", "error": "no valid card ids to send"}
+        for card_id in cards:
+            for friend_id in friend_ids:
+                res = self.cardsSend(serial, friend_id, card_id, config)
+                results.append({"card_id": card_id, "to": friend_id, "res": res})
+                if res.get("ok"):
+                    sent += 1
+                else:
+                    failed.append({"card_id": card_id, "to": friend_id, "res": res})
+        return {
+            "ok": len(failed) == 0,
+            "status": "sent" if not failed else "partial",
+            "sent": sent,
+            "total": len(cards) * len(friend_ids),
+            "failed": failed,
+            "results": results,
+        }
+
+    def cardsInbox(self, serial: str, config: dict | None = None) -> dict:
+        """CheckCity → the recipient's own inbox (so 'card received' is provable)."""
+        if _tsx is None:
+            return {"ok": False, "error": "frame codec not available"}
+        creds = _CARD_CREDS.get(serial)
+        if not creds:
+            return {"ok": False, "error": "load the account first (Refresh)"}
+        cfg = _card_config(config)
+        r = _card_api("CheckCity", {"cityId": creds["cityId"], "tz": 28800}, cfg,
+                      bver=creds["bver"], fver=creds["fver"], token=creds["token"],
+                      query=f"?cityId={creds['cityId']}")
+        if not (r.get("ok") and isinstance(r.get("resp"), dict)):
+            status = int(r.get("status") or 0)
+            return {"ok": False, "status": status,
+                    "error": r.get("error") or f"HTTP {status}"}
+        result = r["resp"].get("result")
+        result = result if isinstance(result, dict) else {}
+        boxes = result.get("boxes")
+        boxes = boxes if isinstance(boxes, list) else []
+        return {"ok": True, "status": 200, "boxes": boxes, "total": len(boxes),
+                "name": result.get("name") or creds["name"], "checkedAt": _now_ms()}
 
     def _read_save(self, adb: str, serial: str, pkg: str) -> tuple[str, bytes] | None:
         diag: list[str] = []
@@ -644,18 +1289,30 @@ def _latest_release_tag(repo: str) -> str:
 
 
 def _cmd_update() -> int:
-    """Self-update from a GitHub release zip.
+    """Self-update from a release zip (manual CLI fallback).
+
+    The shipped EXE normally updates itself: the web app polls the server for
+    a published release and calls `installUpdate`. This verb only exists so an
+    operator can force it by hand.
 
     Env:
-      HC_UPDATE_REPO   - owner/repo to pull from (default the IGG VIP Studio repo)
-      HC_UPDATE_ASSET   - release asset name (default IGG.VIP.TOOL.zip)
+      HC_UPDATE_URL    - direct URL of the release zip (preferred)
+      HC_UPDATE_REPO   - owner/repo to pull from (GitHub fallback)
+      HC_UPDATE_ASSET   - release asset name (GitHub fallback)
       HC_UPDATE_TAG     - pin a tag (skips the latest-release lookup)
       HC_UPDATE_SHA256  - expected SHA-256 of the asset; mismatch refuses to swap
     """
-    repo = os.environ.get("HC_UPDATE_REPO") or "Aditya4650-am/igg-vip-studio"
-    asset = os.environ.get("HC_UPDATE_ASSET") or "IGG.VIP.TOOL.zip"
-    tag = os.environ.get("HC_UPDATE_TAG") or _latest_release_tag(repo)
-    url = f"https://github.com/{repo}/releases/download/{tag}/{asset}"
+    direct = (os.environ.get("HC_UPDATE_URL") or "").strip()
+    if direct:
+        url = direct
+        tag = os.environ.get("HC_UPDATE_TAG") or "manual"
+    else:
+        repo = os.environ.get("HC_UPDATE_REPO") or ""
+        if not repo:
+            raise ClientError("set HC_UPDATE_URL (or HC_UPDATE_REPO) to update")
+        asset = os.environ.get("HC_UPDATE_ASSET") or "HOMESC.SAVE.STUDIO.zip"
+        tag = os.environ.get("HC_UPDATE_TAG") or _latest_release_tag(repo)
+        url = f"https://github.com/{repo}/releases/download/{tag}/{asset}"
     dest = Path(tempfile.gettempdir()) / f"hc_update_{tag}.zip"
     req = _urlrequest.Request(url, headers={"User-Agent": "hc-client"})
     with _urlrequest.urlopen(req, timeout=900) as r:
@@ -683,7 +1340,57 @@ def _cmd_update() -> int:
     os._exit(0)
 
 
+# The auto-updater's on-disk swap. The EXE ships onedir (a folder), so a new
+# release is swapped by a tiny .cmd that waits for the running EXE to exit,
+# copies the staged tree over the install folder, relaunches, and deletes
+# itself. Nothing here decides WHAT to download — that comes from the server's
+# published release, verified by SHA-256 before a single byte is staged.
 
+def _release_zip_is_folder(names) -> bool:
+    """A foldered (onedir) release zips a directory tree, so some entries carry
+    a path separator; a single-file zip does not."""
+    return any("/" in n.replace("\\", "/") for n in names)
+
+
+def _wait_then_swap_bat(staged: str, dest: str, exe_name: str) -> str:
+    """Batch: wait for the running EXE to exit, copy staged -> dest, relaunch."""
+    lines = [
+        "@echo off",
+        "setlocal enabledelayedexpansion",
+        f'set "STAGED={staged}"',
+        f'set "DEST={dest}"',
+        f'set "EXE={dest}\\{exe_name}"',
+        "set /a N=0",
+        ":wait",
+        # tasklist|find -> errorlevel 1 when the EXE is NOT running.
+        f'tasklist /fi "imagename eq {exe_name}" 2>nul | find /i "{exe_name}" >nul',
+        "if errorlevel 1 goto copy",
+        "set /a N+=1",
+        "if !N! GEQ 60 goto copy",
+        "timeout /t 1 /nobreak >nul",
+        "goto wait",
+        ":copy",
+        'xcopy /y /e /q /i "%STAGED%\\*" "%DEST%\\" >nul',
+        'start "" "%EXE%"',
+        'rmdir /s /q "%STAGED%"',
+        'del "%~f0"',
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _swap_single_exe_bat(new_exe: str, dest: str) -> str:
+    """Batch: pause so the old EXE exits, move the new one over it, relaunch."""
+    lines = [
+        "@echo off",
+        "setlocal",
+        f'set "NEW={new_exe}"',
+        f'set "DEST={dest}"',
+        "ping 127.0.0.1 -n 4 >nul",
+        'move /y "%NEW%" "%DEST%" >nul',
+        'start "" "%DEST%"',
+        'del "%~f0"',
+    ]
+    return "\n".join(lines) + "\n"
 
 
 # --------------------------------------------------------------------- proxy --
@@ -888,6 +1595,17 @@ def _cli(argv: list[str]) -> int:
     p_restore = sub.add_parser("restore-backup")
     p_restore.add_argument("--serial", required=True)
 
+    sub.add_parser("cards-load")
+    p_cards_send = sub.add_parser("cards-send")
+    p_cards_send.add_argument("--serial", required=True)
+    p_cards_send.add_argument("--to", required=True)
+    p_cards_send.add_argument("--card", required=True)
+    p_cards_send_all = sub.add_parser("cards-send-all")
+    p_cards_send_all.add_argument("--serial", required=True)
+    p_cards_send_all.add_argument("--cards", required=True)
+    p_cards_send_all.add_argument("--friends", required=True)
+    sub.add_parser("cards-inbox")
+
     sub.add_parser("proxy")
     sub.add_parser("update")
 
@@ -910,6 +1628,16 @@ def _cli(argv: list[str]) -> int:
             _emit(client.start(args.serial))
         elif args.cmd == "restore-backup":
             _emit(client.restore_backup(args.serial))
+        elif args.cmd == "cards-load":
+            _emit(client.cardsLoad(args.serial, config={}))
+        elif args.cmd == "cards-send":
+            _emit(client.cardsSend(args.serial, args.to, args.card, config={}))
+        elif args.cmd == "cards-send-all":
+            cards = [c.strip() for c in args.cards.split(",") if c.strip()]
+            friends = [f.strip() for f in args.friends.split(",") if f.strip()]
+            _emit(client.cardsSendAll(args.serial, cards, friends, config={}))
+        elif args.cmd == "cards-inbox":
+            _emit(client.cardsInbox(args.serial, config={}))
         elif args.cmd == "proxy":
             port = int(os.environ.get("HC_PROXY_PORT", "8790"))
             upstream = os.environ.get("HC_STUDIO_UPSTREAM", "http://127.0.0.1:8787").rstrip("/")
@@ -944,6 +1672,15 @@ def _serve_window() -> int:
 
     device_id = get_device_id() if 'get_device_id' in globals() else ""
     url = with_device_param(normalize_base_url(resolve_server_url()), device_id)
+
+    # pywebview publishes a JS API object only through `js_api=` on
+    # `create_window`. It must be a callable-collection (module/class with
+    # methods), NOT an instance — `Window.expose()` rejects non-callables and
+    # `webview.start()` has no `js_api` kwarg, so the old
+    # `window.expose(HomescapesClient())` + `start(js_api=True)` pair raised
+    # TypeError before any window opened (silently, in the windowed build).
+    api = HomescapesClient()
+
     window = webview.create_window(
         APP_NAME,
         url,
@@ -951,15 +1688,25 @@ def _serve_window() -> int:
         height=900,
         min_size=(1024, 700),
         background_color="#0b0f17",
+        js_api=api,
     )
-    # Expose the bridge so the UI can drive ADB without an HTTP hop.
-    window.expose(HomescapesClient())
-    webview.start(debug=bool(os.environ.get("HC_DEBUG")), js_api=True)
-    # Inject the alias so window.hcNative is available.
-    try:
-        window.evaluate_js(_ALIAS_JS)
-    except Exception:
-        pass
+
+    def _alias_when_ready() -> None:
+        """Alias window.pywebview.api -> window.hcNative once the page exists.
+
+        Runs on pywebview's own thread after the window is up; the script
+        itself polls briefly, because the app is a SPA whose origin may still
+        be navigating when this first fires.
+        """
+        try:
+            window.evaluate_js(_ALIAS_JS)
+        except Exception:
+            pass
+
+    # `webview.start(func)` runs `func` on a background thread once the GUI is
+    # ready, and only THEN blocks — unlike the previous placement, which ran
+    # after the window had already closed.
+    webview.start(_alias_when_ready, debug=bool(os.environ.get("HC_DEBUG")))
     return 0
 
 

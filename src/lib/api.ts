@@ -341,6 +341,17 @@ function post<T>(path: string, payload: unknown): Promise<T> {
 export const api = {
   health: () => request<{ ok: boolean; app: string; version: string }>("/api/health"),
 
+  /**
+   * The published desktop EXE release. The web app polls this and, when the
+   * server's version is newer than the running EXE's, calls the native
+   * installer — this is what makes the shipped EXE self-updating.
+   */
+  getUpdate: () =>
+    request<{
+      ok: boolean;
+      release: { version: string; downloadUrl: string; sha256: string; notes: string; publishedAt: number };
+    }>("/api/update"),
+
   /* -------------------------------------------------------------- license -- */
   licenseStatus: () =>
     request<{ ok: boolean; required: boolean; storage: "postgres" | "file"; ownerConfigured: boolean }>(
@@ -459,6 +470,24 @@ export const api = {
         };
       }
     >("/api/cards/grant", payload),
+
+  /**
+   * Send cards to game friends through the live Playrix SendBox flow. Every
+   * (card, friend) pair is a real SendBox round-trip, so the recipient's game
+   * pops the genuine "card received" popup. `friends` are recipient device
+   * save ids; `cards` are card ids such as `card_19`.
+   */
+  cardsSend: (payload: { serial: string; friends: string[]; cards: string[] }) =>
+    post<
+      {
+        ok: boolean;
+        status: string;
+        sent: number;
+        total: number;
+        failed: Array<{ card_id: string; to: string; res: any }>;
+        results: Array<{ card_id: string; to: string; res: any }>;
+      }
+    >("/api/cards/send", payload),
 
   devices: () =>
     request<{ ok: boolean; info: AdbInfo }>("/api/devices").then((r) => r.info),

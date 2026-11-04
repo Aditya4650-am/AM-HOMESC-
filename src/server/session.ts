@@ -111,10 +111,44 @@ export class SaveSession {
   /** Current values for the curated catalogue fields (missing ones are null). */
   values(): Record<string, unknown> {
     const save = openSave(this.plain);
+    /*
+     * Some saves store the statistics dictionary as JSON *text* —
+     * `"v": "{\"FirstTryWins\":12,…}"` — instead of a bare object (the write
+     * path already handles both; see `coalesceStringDictionary`). In the string
+     * form, `save.has()` on an individual stat leaf is FALSE because its parent
+     * is a string, so every Game Statistics card read as "not in save" even
+     * after a successful edit. Decode the string once here so reads and writes
+     * agree on both shapes.
+     */
+    const dictPath = "SpecialEvents.UserProfileFeature.v.UserProfileStatistics.v";
+    let stringStats: Record<string, unknown> | null = null;
+    if (save.has(dictPath)) {
+      const dict = save.field(dictPath);
+      if (dict.span.type === "string") {
+        try {
+          const parsed: unknown = JSON.parse(String(dict.value));
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            stringStats = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // Malformed dictionary: leaves read as absent, same as before.
+        }
+      }
+    }
+
     const out: Record<string, unknown> = {};
     for (const g of CATALOG) {
       for (const f of g.fields) {
-        out[f.path] = save.has(f.path) ? save.field(f.path).value : null;
+        if (save.has(f.path)) {
+          out[f.path] = save.field(f.path).value;
+        } else if (stringStats && f.path.startsWith(`${dictPath}.`)) {
+          const key = f.path.slice(dictPath.length + 1);
+          out[f.path] = Object.prototype.hasOwnProperty.call(stringStats, key)
+            ? stringStats[key]
+            : null;
+        } else {
+          out[f.path] = null;
+        }
       }
     }
     return out;
@@ -145,9 +179,37 @@ export class SaveSession {
 
 const sessions = new Map<string, SaveSession>();
 
-export function createSession(name: string, container: Uint8Array): SaveSession {
+/**
+ * The ONE session the desktop app is editing.
+ *
+ * There is deliberately an explicit pointer rather than "newest wins". Clone,
+ * season-pass and pull each stage an intermediate donor session
+ * (`content-source`, `season-pass-source`) plus a fresh `device:<serial>`
+ * session; under a newest-wins rule those silently stole the UI — the tabs
+ * read one save while Push exported another, which is exactly the "edited but
+ * nothing changed in game" failure. `resolveSession()` honours this pointer
+ * first, so a donor created mid-operation can never become the edit target.
+ */
+let activeId: string | null = null;
+
+export function setActiveSession(id: string): void {
+  if (sessions.has(id)) activeId = id;
+}
+
+export function getActiveSessionId(): string | null {
+  return activeId;
+}
+
+export function createSession(
+  name: string,
+  container: Uint8Array,
+  opts: { active?: boolean } = {},
+): SaveSession {
   const s = new SaveSession(name, container);
   sessions.set(s.id, s);
+  // A session becomes the edit target only when something the operator will
+  // actually push is loaded into it. Donor sessions pass `active: false`.
+  if (opts.active !== false) setActiveSession(s.id);
   return s;
 }
 
@@ -162,16 +224,21 @@ export function listSessions(): SessionMeta[] {
 }
 
 export function dropSession(id: string): boolean {
+  if (activeId === id) activeId = null;
   return sessions.delete(id);
 }
 
-/** Exactly one session is active in the desktop app; pick the newest. */
+/** The session the app is editing, or undefined when nothing is loaded. */
 export function currentSession(): SaveSession | undefined {
+  if (activeId) {
+    const s = sessions.get(activeId);
+    if (s) return s;
+  }
   const all = [...sessions.values()];
   return all[all.length - 1];
 }
 
-/** Resolve a session by explicit id, or fall back to the newest. */
+/** Resolve a session by explicit id, or fall back to the active session. */
 export function resolveSession(id?: string): SaveSession {
   if (id) return getSession(id);
   const s = currentSession();

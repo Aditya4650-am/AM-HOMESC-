@@ -47,7 +47,7 @@ function loadCatalog(): Promise<CosmeticGroupInfo[]> {
 }
 
 export function CosmeticsKindSection({ kind }: { kind: string }) {
-  const { overview } = useStudio();
+  const { overview, setSectionSave } = useStudio();
   const toast = useToast();
   const sessionId = overview?.meta.id;
 
@@ -175,6 +175,28 @@ export function CosmeticsKindSection({ kind }: { kind: string }) {
       return false;
     }
   };
+
+  /**
+   * The push-flush the shared title-bar Push calls before exporting.
+   *
+   * Grants/equips live in LOCAL `useState` and never enter the shared pending
+   * map, so without this the title-bar Push exported a save that never
+   * contained the staged unlock — the tab said "staged", the game showed
+   * nothing. When nothing is staged it returns true SILENTLY (no "Nothing to
+   * save" toast), so pressing Push on this tab while empty is a no-op. A false
+   * return (apply already reported why it failed) aborts the push.
+   */
+  const flushForPush = useCallback(async (): Promise<boolean> => {
+    if (grantStaged.length === 0 && equipStaged === undefined) return true;
+    return apply();
+  }, [grantStaged, equipStaged, apply]);
+
+  // Publish/withdraw the push-flush for as long as this tab is mounted. The
+  // studio clears it on unmount so a hidden tab's callback is never invoked.
+  useEffect(() => {
+    setSectionSave(flushForPush);
+    return () => setSectionSave(null);
+  }, [flushForPush, setSectionSave]);
 
   /* -------------------------------------------------------------- render -- */
 

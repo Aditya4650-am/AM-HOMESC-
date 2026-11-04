@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -96,6 +97,12 @@ interface StudioState {
   /** Write the session back to the device and relaunch the game. */
   push: () => Promise<void>;
   pushing: boolean;
+  /**
+   * Register (or clear with `null`) the active section's own save callback so
+   * the shared `push()` can flush it first. Sections with local-only staged
+   * state (cosmetics grant/equip) call this on mount and clear it on unmount.
+   */
+  setSectionSave: (fn: (() => Promise<boolean>) | null) => void;
   /** Activity log, newest first. */
   log: LogEntry[];
   pushLog: (tone: LogEntry["tone"], msg: string, detail?: string) => void;
@@ -112,9 +119,27 @@ function nativeBridge(): {
   devices: () => Promise<{ id: string; label: string }[]>;
   pull: (serial: string) => Promise<{ ok: boolean; b64: string; file: string; package: string }>;
   push: (serial: string, b64: string, options?: { restart?: boolean }) => Promise<{ ok: boolean; error?: string; toolBackup?: string }>;
+  /** The packaged EXE version, compared against the server's release. */
   version: () => string;
+  /** Download a verified release and swap the running EXE in place. */
+  installUpdate: (
+    release: { version: string; downloadUrl: string; sha256: string },
+  ) => Promise<{ ok: boolean; reason?: string; version?: string }>;
 } | undefined {
   return (window as unknown as { hcNative?: any }).hcNative;
+}
+
+/** Numeric-aware version compare: "0.2.0" > "0.10.0" is false, etc. */
+function compareVersions(a: string, b: string): number {
+  const pa = (a || "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = (b || "").split(".").map((n) => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
 }
 
 export function useStudio(): StudioState {
@@ -189,6 +214,57 @@ export function StudioProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  /**
+   * Self-update poll.
+   *
+   * The EXE is a thin shell that loads the UI from this server, so a UI deploy
+   * reaches every installed copy with no rebuild. Only a change to the EXE
+   * binary ships a release zip, which the server publishes. When that version
+   * is newer than the running EXE's, hand the release to the native installer
+   * (download + SHA-256 verify + atomic swap + relaunch). Runs once on mount
+   * and every 15 minutes; a missed poll never breaks the studio. No-op in a
+   * browser, where there is no EXE to update.
+   */
+  useEffect(() => {
+    const native = nativeBridge();
+    if (!native || typeof native.version !== "function") return;
+    let stopped = false;
+    const tick = async () => {
+      try {
+        const current = native.version();
+        const r = await api.getUpdate();
+        const rel = r.release;
+        if (stopped || !rel?.downloadUrl || compareVersions(rel.version, current) <= 0) return;
+        // Never retry the same version in a loop after it already installed.
+        const marker = `hc-auto-update-${rel.version}`;
+        try {
+          if (localStorage.getItem(marker) === "done") return;
+        } catch {
+          /* private mode: proceed anyway */
+        }
+        const res = await native.installUpdate(rel);
+        if (res?.ok) {
+          try {
+            localStorage.setItem(marker, "done");
+          } catch {
+            /* ignore */
+          }
+          toast.ok("Updating…", `Installing ${rel.version} — the tool will reopen.`);
+        } else if (res?.reason) {
+          toast.err("Update failed", res.reason);
+        }
+      } catch {
+        /* a missed poll must never break the studio */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 15 * 60 * 1000);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [toast]);
 
   const setPending = useCallback((path: string, value: number | string | boolean) => {
     setPendingMap((prev) => {
@@ -373,6 +449,22 @@ export function StudioProvider({ children }: { children: ReactNode }) {
    * PUSH — write the session back to the device and relaunch the game, so the
    * client is already open on the new save when the button returns.
    */
+  /**
+   * The ACTIVE section's own persistence callback (cosmetics grants/equips).
+   *
+   * Sections keep that state locally — it never enters the shared `pending`
+   * map — so before this existed the title-bar Push exported the session
+   * WITHOUT the staged unlock: the tab said "staged", the game showed nothing,
+   * and only the section's own Save button worked. Registering it here lets
+   * the ONE shared `push()` flush a section's local edits first, exactly like
+   * the IGG tool's single Save & push. A ref (not state) so `push` never
+   * closes over a stale callback.
+   */
+  const sectionSaveRef = useRef<(() => Promise<boolean>) | null>(null);
+  const setSectionSave = useCallback((fn: (() => Promise<boolean>) | null) => {
+    sectionSaveRef.current = fn;
+  }, []);
+
   const push = useCallback(async () => {
     if (!serial) {
       toast.err("No device", "Press Connect first so the tool knows which client to write to.");
@@ -384,6 +476,23 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         "Press Connect (or run a clone) first so the tool is holding a save that came from this client.",
       );
       return;
+    }
+    // A section with its own persistence (cosmetics) must land BEFORE the
+    // flush below — it is not in `pending`. A refusal aborts the push so we
+    // never write a save that is missing the staged unlock.
+    const saver = sectionSaveRef.current;
+    if (saver) {
+      const saved = await saver();
+      if (!saved) return;
+    }
+    // Flush staged field edits BEFORE exporting. This title-bar Push used to
+    // export the session as-is, silently dropping whatever the operator had
+    // typed but not yet Saved — the single biggest "I edited it but the game
+    // shows nothing" cause. A refusal aborts the push rather than writing a
+    // stale save.
+    if (pending.size > 0) {
+      const flushed = await applyPending();
+      if (!flushed) return;
     }
     setPushing(true);
     try {
@@ -419,7 +528,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     } finally {
       setPushing(false);
     }
-  }, [serial, deviceSerial, overview, toast, pushLog]);
+  }, [serial, deviceSerial, overview, pending, applyPending, toast, pushLog]);
 
   const value = useMemo<StudioState>(
     () => ({
@@ -449,6 +558,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       connecting,
       push,
       pushing,
+      setSectionSave,
       log,
       pushLog,
     }),
@@ -476,6 +586,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       connecting,
       push,
       pushing,
+      setSectionSave,
       log,
       pushLog,
     ],

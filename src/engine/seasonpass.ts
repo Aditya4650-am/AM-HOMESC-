@@ -409,6 +409,15 @@ export function planSeasonPass(save: SaveGame, donor: SaveGame): SeasonPassPlan 
   if (saveIdx === undefined) {
     throw new Error(`this account's ${eventRoot} has no ${EVENT_LOGIC} component`);
   }
+  if (donorIdx !== saveIdx) {
+    // The two saves need not store the season's components at the same slot.
+    // Every op below is addressed by the ACCOUNT's own index, so say so —
+    // "component 3" is the line that explains why the write landed where it did.
+    notes.push(
+      `the account's own ${EVENT_LOGIC} is component ${saveIdx} (the donor stores it ` +
+        `at ${donorIdx}); the write used this account's index.`,
+    );
+  }
 
   /* Purchase-shaped components are never copied. */
   const names = componentNames(donor, season);
