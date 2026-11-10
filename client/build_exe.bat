@@ -24,7 +24,7 @@ if errorlevel 1 (
   echo [build] zip failed
   exit /b 1
 )
-echo [build] done -> dist\HOMESC.SAVE.STUDIO.zip
+echo [build] done: dist\HOMESC.SAVE.STUDIO.zip
 echo [build] sha256:
 powershell -NoProfile -Command "$h=(Get-FileHash 'dist\HOMESC.SAVE.STUDIO.zip' -Algorithm SHA256).Hash; $s=(Get-Item 'dist\HOMESC.SAVE.STUDIO.zip').Length; Write-Output ('sha256=' + $h); Write-Output ('bytes=' + $s)"
 endlocal
