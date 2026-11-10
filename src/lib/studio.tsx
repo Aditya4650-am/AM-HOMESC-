@@ -36,19 +36,9 @@ export type SectionId =
   | "lives"
   | "cosmetics"
   | "avatars"
-  | "currencies"
-  | "quests"
-  | "rooms"
-  | "costumes"
-  | "collections"
-  | "events"
-  | "match3"
-  | "items"
-  | "explorer"
   | "pets"
   | "freshstart"
   | "homeclone"
-  | "review"
   | "owner";
 
 /** One line in the sidebar activity log. */

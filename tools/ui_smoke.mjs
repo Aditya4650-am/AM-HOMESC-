@@ -34,11 +34,10 @@ const verbose = Boolean(process.env.UI_SMOKE_VERBOSE);
 /** Every navigation entry the shell is expected to expose. */
 const LABELS = [
   "Dashboard", "Stats", "Cards",
-  "Currencies", "Items", "Quests", "Rooms", "Collections", "Costumes", "Events",
-  "Match 3", "Explorer", "Pets",
+  "Pets",
   "Boosters", "Lives",
   "Frames", "Styles", "Badges", "Avatars", "Decorations", "All cosmetics",
-  "Home Pass", "Fresh Start", "IGG Account", "Review",
+  "Home Pass", "Fresh Start", "IGG Account",
 ];
 
 const fail = (message) => {

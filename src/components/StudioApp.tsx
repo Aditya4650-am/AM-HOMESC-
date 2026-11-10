@@ -15,17 +15,7 @@ import { HomeCloneSection } from "../sections/HomeCloneSection.tsx";
 import { OwnerSection } from "../sections/OwnerSection.tsx";
 import { PetsSection } from "../sections/PetsSection.tsx";
 import { CoreSection } from "../sections/CoreSection.tsx";
-import { CurrenciesSection } from "../sections/CurrenciesSection.tsx";
-import { ItemsSection } from "../sections/ItemsSection.tsx";
-import { QuestsSection } from "../sections/QuestsSection.tsx";
-import { RoomsSection } from "../sections/RoomsSection.tsx";
-import { CollectionsSection } from "../sections/CollectionsSection.tsx";
-import { CostumesSection } from "../sections/CostumesSection.tsx";
-import { EventsSection } from "../sections/EventsSection.tsx";
-import { Match3Section } from "../sections/Match3Section.tsx";
-import { ExplorerSection } from "../sections/ExplorerSection.tsx";
 import { CosmeticsSection } from "../sections/CosmeticsSection.tsx";
-import { ReviewSection } from "../sections/ReviewSection.tsx";
 
 /**
  * AM TECH Homescapes Tool — exact recreation of the supplied 1536×1024
@@ -71,13 +61,13 @@ const NAV_MAIN: NavDef[] = [
 ];
 
 /**
- * Every section the engine can drive is reachable from here.
+ * Every section the shell still exposes, grouped the way the sidebar renders
+ * them — a two-column grid so the whole tool fits without hunting below the
+ * fold.
  *
- * This sidebar used to list 12 entries while `src/sections/` held 24 complete
- * tabs — currencies, items, quests, rooms, collections, costumes, events,
- * match-3, explorer, boosters, lives, cosmetics and the review screen were
- * all written, typechecked and never mounted. They are grouped and rendered as
- * a two-column grid so the whole tool fits without hunting below the fold.
+ * The content-browsing tabs (currencies, items, quests, rooms, collections,
+ * costumes, events, match-3, explorer) and the Review screen were removed at
+ * the owner's request; only the tabs that remain here are reachable.
  */
 interface NavGroup {
   title: string;
@@ -87,18 +77,7 @@ interface NavGroup {
 const NAV_GROUPS: NavGroup[] = [
   {
     title: "Content",
-    items: [
-      { id: "currencies", label: "Currencies", icon: "gi/Coins.webp" },
-      { id: "items", label: "Items", icon: "gi/Chest.webp" },
-      { id: "quests", label: "Quests", icon: "gi/Gold_Medal.webp" },
-      { id: "rooms", label: "Rooms", icon: "gi/rm/Bedroom.png" },
-      { id: "collections", label: "Collections", icon: "gi/ui/Cards2.png" },
-      { id: "costumes", label: "Costumes", icon: "gi/ch/Characters.webp" },
-      { id: "events", label: "Events", icon: "gi/ev/Tickets.webp" },
-      { id: "match3", label: "Match 3", icon: "gi/Rocket.webp" },
-      { id: "explorer", label: "Explorer", icon: "gi/ui/Mansion_Rooms.png" },
-      { id: "pets", label: "Pets", icon: "assets/ui/nav-badges.png" },
-    ],
+    items: [{ id: "pets", label: "Pets", icon: "assets/ui/nav-badges.png" }],
   },
   {
     title: "Boosters",
@@ -124,7 +103,6 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "homepass", label: "Home Pass", icon: "assets/ui/nav-homepass.png" },
       { id: "freshstart", label: "Fresh Start", icon: "assets/ui/nav-stats.png" },
       { id: "homeclone", label: "IGG Account", icon: "assets/ui/nav-home.png" },
-      { id: "review", label: "Review", icon: "assets/ui/save-glyph.png" },
       { id: "owner", label: "Owner", icon: "assets/ui/nav-badges.png" },
     ],
   },
@@ -451,24 +429,6 @@ function NavItem({ def }: { def: NavDef }) {
 function Content() {
   const { section } = useStudio();
   switch (section) {
-    case "currencies":
-      return <CurrenciesSection />;
-    case "items":
-      return <ItemsSection />;
-    case "quests":
-      return <QuestsSection />;
-    case "rooms":
-      return <RoomsSection />;
-    case "collections":
-      return <CollectionsSection />;
-    case "costumes":
-      return <CostumesSection />;
-    case "events":
-      return <EventsSection />;
-    case "match3":
-      return <Match3Section />;
-    case "explorer":
-      return <ExplorerSection sectionId="explorer" />;
     case "boosters":
       return <CoreSection groupId="boosters" />;
     case "lives":
@@ -477,8 +437,6 @@ function Content() {
       return <CoreSection groupId="core" />;
     case "cosmetics":
       return <CosmeticsSection />;
-    case "review":
-      return <ReviewSection />;
     case "stats":
       return <StatsSection />;
     case "cards":
