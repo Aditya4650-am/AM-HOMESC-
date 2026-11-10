@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import hmac
 import json
 import os
 import random
@@ -458,6 +459,41 @@ def _find_on_device(adb: str, serial: str, pkg: str, filename: str) -> str | Non
     return None
 
 
+# Playrix identifies a device by the Google Advertising ID: the very first
+# GetSaveAndRegister of a session sends it as `deviceId`, and the server keys
+# every save of that install off it.  Reading it back from GMS therefore lets
+# us re-open the account without any on-disk LocalInfo (newer builds no longer
+# write one at all).
+_AAID_FILES = (
+    "/data/data/com.google.android.gms/shared_prefs/adid_settings.xml",
+    "/data/user/0/com.google.android.gms/shared_prefs/adid_settings.xml",
+)
+
+
+def _device_ad_id(adb: str, serial: str) -> str:
+    """The install's advertising id, or "" when GMS is missing/unreadable."""
+    for remote in _AAID_FILES:
+        for args in (
+            ["-s", serial, "exec-out", "su", "-c", f"cat '{remote}'"],
+            ["-s", serial, "shell", f"su -c 'cat {remote}'"],
+        ):
+            code, out, _ = _run_adb(adb, args, timeout=20)
+            if code != 0 or not out:
+                continue
+            txt = out.decode("utf-8", "replace")
+            if _looks_like_shell_error(txt):
+                continue
+            m = re.search(
+                r'name="adid_key"\s*value="([0-9a-fA-F-]{32,36})"', txt)
+            if m:
+                return m.group(1)
+            m = re.search(r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+                          r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b', txt)
+            if m:
+                return m.group(1)
+    return ""
+
+
 def _is_pkg_installed(adb: str, serial: str, pkg: str) -> bool:
     code, out, _ = _run_adb(adb, ["-s", serial, "shell", "pm", "path", pkg], timeout=10)
     return code == 0 and b"package:" in out
@@ -490,16 +526,21 @@ GAME_GVER = "9.2.5"
 GAME_PVER = "F31A29B4"
 GAME_USER_AGENT = "okhttp/3.12.13"
 
+# The X-Signature key recovered from the shipping libgame.so (function
+# 0x6d4b0e6 is a hand-rolled HMAC-SHA1: the key is copied into a 64-byte
+# buffer, XOR'd with 0x36, fed through boost::uuids::detail::sha1 together
+# with the raw request body, then re-hashed against the 0x5c pad).  The same
+# constant verifies every captured /api/1 sample, so it is a build-wide
+# literal rather than a per-account value.
+_API1_HMAC_KEY = "0*~O*2V35NzUDNtS1vhnZfDNtHRv@@"
+
 _API1_SIGN_SECRETS: dict[str, str] = {
-    "homescapes.playrix.com": "",
+    "homescapes.playrix.com": _API1_HMAC_KEY,
 }
 _API1_SIGN_FALLBACKS: list[str] = [
-    "",
-    "c4bea4c191a444c2993cb50b640f6063",
-    "hs+7d5d6b1e53018433bbf0bf80d0d13327e72af3f5fafcb7ab09a7d2cbaec81ad7",
-    "hs+f47bcff41bda03a679e0df714f0339a4c99840a0e366a653f6a6957bf67f264c",
+    _API1_HMAC_KEY,
 ]
-CARD_COL_ID_DEFAULT = "7"            # card-album event id  (Township-derived)
+CARD_COL_ID_DEFAULT = "CardsCollection7"  # card-album event id (from the live event)
 CARD_COL_ET_DEFAULT = 1794560400     # event end-time (unix; API accepts stale)
 
 # LocalInfo filenames to try, in order — the exact name varies by build.
@@ -533,8 +574,16 @@ def _api1_secret_for(host: str, endpoint: str, token: str) -> str:
 
 
 def _api1_signature(body_str: str, secret: str = "") -> str:
-    """X-Signature: lowercase hex SHA-1 over the exact request body bytes."""
-    return hashlib.sha1((secret + body_str).encode("utf-8", "replace")).hexdigest()
+    """X-Signature: lowercase hex HMAC-SHA1(key, exact request body bytes).
+
+    This mirrors the game's own signer (libgame.so 0x6d4b0e6): the key is
+    XOR-padded to the SHA-1 block size with 0x36, the raw body is hashed
+    against it, and the digest is re-hashed against the 0x5c pad.  Only the
+    body is signed — neither the URL nor the headers take part — which is why
+    a body we send byte-for-byte identically reproduces the game's header.
+    """
+    key = (secret or _API1_HMAC_KEY).encode("utf-8", "replace")
+    return hmac.new(key, body_str.encode("utf-8", "replace"), hashlib.sha1).hexdigest()
 
 
 def _api1_url(endpoint: str, host: str, bver: str, save_id: str = "", query: str = "") -> str:
@@ -564,18 +613,27 @@ def _card_api(
     url = _api1_url(endpoint, host, bver, save_id or "", query)
     secret = _api1_secret_for(host, endpoint, token)
     sig = _api1_signature(body_str, secret)
-    rid = f"{int(time.time() * 1000):013d}{random.randint(0, 999999999):09d}"
+    # The game mints a random RFC-4122 UUID here (libgame.so 0x6d2ac28), and
+    # the server only echoes it back — it is not part of the signature — but
+    # matching the shape keeps every header byte-for-byte identical to a real
+    # client, so an unexpected validator can never tell the two apart.
+    rid = str(uuid.uuid4())
+    headers = {
+        "Content-Type": "application/json",
+        "x-request-id": rid,
+        "x-signature": sig,
+        "x-version": str(cfg.get("gver") or GAME_GVER),
+        "user-agent": GAME_USER_AGENT,
+    }
+    # Playrix attaches the session token to every authenticated /api/1 call
+    # (it is absent only from the pre-login handshake), so mirror that here.
+    if token:
+        headers["hs-token"] = token
     rq = _urlrequest.Request(
         url,
         data=body_str.encode("utf-8", "replace"),
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "x-request-id": rid,
-            "x-signature": sig,
-            "x-version": str(cfg.get("gver") or GAME_GVER),
-            "user-agent": GAME_USER_AGENT,
-        },
+        headers=headers,
     )
     status = 0
     raw = ""
@@ -585,7 +643,15 @@ def _card_api(
             raw = resp.read().decode("utf-8", "replace")
     except Exception as exc:
         status = int(getattr(exc, "code", 0) or 0)
-        raw = f"{type(exc).__name__}: {exc}"
+        # urllib raises for 4xx/5xx but keeps the response body on the error
+        # object — read it, otherwise every rejection looks like a bare
+        # "HTTPError: HTTP Error 400: Bad Request" with no server reason.
+        body_txt = ""
+        try:
+            body_txt = exc.read().decode("utf-8", "replace")  # type: ignore[attr-defined]
+        except Exception:
+            body_txt = ""
+        raw = body_txt or f"{type(exc).__name__}: {exc}"
     resp_json: dict = {}
     txt = raw.strip()
     if txt[:1] in ("{", "["):
@@ -597,8 +663,8 @@ def _card_api(
         "ok": status in (200, 201, 204),
         "status": status,
         "resp": resp_json if isinstance(resp_json, dict) else {},
-        "error": "" if status in (200, 201, 204) else str(resp_json)[:200],
-        "raw": txt[:200],
+        "error": "" if status in (200, 201, 204) else (str(resp_json)[:200] if resp_json else txt[:300]),
+        "raw": txt[:300],
     }
 
 
@@ -926,114 +992,189 @@ class HomescapesClient:
         cfg = _card_config(config)
         return _probe_host(cfg["host"])
 
-    def cardsLoad(self, serial: str, config: dict | None = None) -> dict:
-        """Decode LocalInfo, stash the token, and confirm it with CheckCity.
+    def _register_creds(self, serial: str, cfg: dict) -> dict:
+        """Re-open the account through Playrix's own login call.
 
-        Returns the public account view only (cityId, versions, name, friends,
-        inbox count) — never the token, which stays in _CARD_CREDS.
+        `GetSaveAndRegister` is what the game itself fires on launch: given the
+        install's advertising id it answers with every save bound to that
+        device — saveId, session token, versions, name, level and the live
+        card inbox.  No LocalInfo file is involved, which matters because
+        recent builds stopped writing one.
         """
-        if _tsx is None:
-            return {"ok": False, "error": "frame codec not available"}
+        adb = _find_adb()
+        if not adb:
+            raise ClientError("adb not found - connect an emulator first")
+        _ensure_adb_ready(adb)
+        device_id = _device_ad_id(adb, serial)
+        if not device_id:
+            raise ClientError(
+                "could not read the device advertising id — root the emulator "
+                "and open Homescapes once, then Refresh")
+        body = {
+            "bver": GAME_BVER,
+            "deviceId": device_id,
+            "gver": GAME_GVER,
+            "platform": "g",
+            "pver": GAME_PVER,
+            "ts": time.time(),
+        }
+        r = _card_api("GetSaveAndRegister", body, cfg,
+                      bver=GAME_BVER, fver=GAME_GVER, token="", save_id="")
+        if not r.get("ok") or not isinstance(r.get("resp"), dict):
+            status = int(r.get("status") or 0)
+            raise ClientError(
+                r.get("error") or f"GetSaveAndRegister: HTTP {status}")
+        saves = r["resp"].get("result", {}).get("saves")
+        saves = [s for s in saves if isinstance(s, dict)] if isinstance(saves, list) else []
+        if not saves:
+            raise ClientError(
+                "Playrix knows no save for this device — open Homescapes once "
+                "and let it reach the main screen, then Refresh")
+        # One install normally has one save; if a device carries several, take
+        # the most recently played rather than an arbitrary first entry.
+        def _upd(s: dict) -> int:
+            try:
+                return int(s.get("updAt") or 0)
+            except Exception:
+                return 0
+        save = max(saves, key=_upd)
+        token = str(save.get("token") or "")
+        city_id = str(save.get("saveId") or "")
+        if not token or not city_id:
+            raise ClientError("Playrix returned a save without a token — retry")
+        try:
+            fver = str(int(save.get("fver") or 0))
+        except Exception:
+            fver = str(save.get("fver") or "")
+        boxes = save.get("boxes")
+        return {
+            "cityId": city_id,
+            "token": token,
+            "bver": str(save.get("bver") or GAME_BVER),
+            "fver": fver,
+            "name": str(save.get("name") or ""),
+            "level": int(save.get("plevel") or 0),
+            "deviceId": device_id,
+            "boxes": boxes if isinstance(boxes, list) else [],
+            "saves": len(saves),
+        }
+
+    def cardsLoad(self, serial: str, config: dict | None = None) -> dict:
+        """Re-open the account, stash the token, and confirm it with CheckCity.
+
+        Returns the public account view only (cityId, versions, name, level,
+        inbox) — never the token, which stays in _CARD_CREDS.
+        """
         cfg = _card_config(config)
         try:
-            xml = self._local_info_xml(serial)
+            creds = self._register_creds(serial, cfg)
         except ClientError as exc:
             return {"ok": False, "error": str(exc)}
-        if not xml:
-            return {"ok": False,
-                    "error": "could not read LocalInfo — open Homescapes once, then Refresh"}
-        creds = _parse_card_creds(xml)
-        missing = [k for k in ("cityId", "token", "bver", "fver") if not creds[k]]
-        if missing:
-            return {"ok": False,
-                    "error": f"LocalInfo missing {', '.join(missing)} — open Homescapes once, then Refresh"}
         view = {
             "cityId": creds["cityId"],
             "bver": creds["bver"],
             "fver": creds["fver"],
             "name": creds["name"],
-            "level": 0,
-            "friends": _parse_card_friends(xml, creds["cityId"]),
-            "boxes": 0,
+            "level": creds["level"],
+            "friends": [],
+            "boxes": len(creds["boxes"]),
             "checkedAt": 0,
             "checkError": None,
         }
-        # Real CheckCity: proves the token works before the first send.
-        r = _card_api("CheckCity", {"cityId": creds["cityId"], "tz": 28800}, cfg,
-                      bver=creds["bver"], fver=creds["fver"], token=creds["token"],
-                      query=f"?cityId={creds['cityId']}")
-        if r.get("ok") and isinstance(r.get("resp"), dict):
-            result = r["resp"].get("result")
-            if isinstance(result, dict):
-                if isinstance(result.get("name"), str) and result["name"]:
-                    view["name"] = result["name"]
-                try:
-                    view["level"] = int(result.get("lvl") or 0)
-                except Exception:
-                    view["level"] = 0
-                boxes = result.get("boxes")
-                view["boxes"] = len(boxes) if isinstance(boxes, list) else 0
-                view["checkedAt"] = _now_ms()
+        # Real FetchSave: proves the freshly-minted token is accepted for
+        # authenticated calls before the first send.  (There is no CheckCity on
+        # this build — every probe of it answers 404.)
+        r = _card_api("FetchSave",
+                      {"dkey": "SaveGame.db", "saveId": creds["cityId"],
+                       "sources": ["deviceId"]},
+                      cfg, bver=creds["bver"], fver=creds["fver"],
+                      token=creds["token"], save_id=creds["cityId"])
+        if r.get("ok"):
+            view["checkedAt"] = _now_ms()
         else:
             status = int(r.get("status") or 0)
             view["checkError"] = (
-                "token rejected (401) — refresh LocalInfo" if status == 401
-                else f"CheckCity: {r.get('error') or 'HTTP ' + str(status)}"
+                "token rejected (401) — Refresh again" if status == 401
+                else f"FetchSave: {r.get('error') or 'HTTP ' + str(status)}"
             )
         _CARD_CREDS[serial] = {
             "cityId": creds["cityId"], "token": creds["token"],
             "bver": creds["bver"], "fver": creds["fver"],
             "name": view["name"], "pic": "",
+            "deviceId": creds.get("deviceId") or "",
             "host": cfg["host"], "colId": cfg["colId"], "colEt": cfg["colEt"],
         }
         return {"ok": True, **view}
 
     def cardsSend(self, serial: str, to_city_id: str, card_id: str,
                   config: dict | None = None) -> dict:
-        """Deliver one card via SendBox. Returns sent / rejected / error with a
+        """Deliver one card via SaveBox. Returns sent / rejected / error with a
         human reason; 403 (anti-abuse cadence) is retried, 401 (bad token) is
         not, because retrying cannot fix a token."""
-        if _tsx is None:
-            return {"ok": False, "status": "error", "error": "frame codec not available"}
         if not re.fullmatch(r"card_\d{2,3}", str(card_id or "")):
             return {"ok": False, "status": "error", "error": f"bad card id {card_id!r}"}
         if not re.fullmatch(r"[A-Za-z0-9]{4,24}", str(to_city_id or "")):
             return {"ok": False, "status": "error", "error": f"bad recipient id {to_city_id!r}"}
         creds = _CARD_CREDS.get(serial)
-        if not creds:
-            return {"ok": False, "status": "error",
-                    "error": "load the account first (Refresh) before sending"}
         # Config precedence: explicit param (current server env) → what
         # cardsLoad stashed (host must match the load that minted the token)
         # → built-in defaults.
         if config:
             cfg = _card_config(config)
-        elif creds.get("host"):
+        elif creds and creds.get("host"):
             cfg = {"host": creds["host"], "colId": creds["colId"], "colEt": creds["colEt"]}
         else:
             cfg = _card_config(None)
-        col_id, col_et = cfg["colId"], cfg["colEt"]
+        if not creds:
+            # The bridge is a one-shot process, so a send can legitimately arrive
+            # with nothing cached — open the account on demand instead of making
+            # every caller remember to Refresh first.
+            try:
+                creds = self._register_creds(serial, cfg)
+            except ClientError as exc:
+                return {"ok": False, "status": "error", "error": str(exc)}
+            _CARD_CREDS[serial] = {
+                "cityId": creds["cityId"], "token": creds["token"],
+                "bver": creds["bver"], "fver": creds["fver"],
+                "name": creds["name"], "pic": "",
+                "deviceId": creds.get("deviceId") or "",
+                "host": cfg["host"], "colId": cfg["colId"], "colEt": cfg["colEt"],
+            }
+        col_id = cfg["colId"]
+        # The box Playrix stores verbatim on the recipient — the exact camelCase
+        # shape GetSaveAndRegister echoes back in its `boxes` array.  `si` is the
+        # SENDER's save id and `from` the sender's profile, because the recipient
+        # is the account that ends up holding this object.
         box = {
-            "afg": 3,
-            "box_type": "collections_send_card",
-            "card_id": card_id,
-            "col_et": col_et,
-            "col_id": col_id,
-            "friend_type": "send_friend",
-            "from": {"city_id": creds["cityId"], "friend_city_name": creds["name"],
-                     "pic": creds.get("pic", "")},
-            "seed": str(10000 + random.randint(0, 89999)),
+            "afg": 0,
+            "bt": 5,
+            "cardId": card_id,
+            "colId": col_id,
+            "friendType": "friend",
+            "from": {
+                "avatarId": str(creds.get("avatarId") or "17"),
+                "avatarStyle": str(creds.get("avatarStyle") or "default"),
+                "badgeId": str(creds.get("badgeId") or "default"),
+                "frameId": str(creds.get("frameId") or "dragon_nest_frame_1"),
+                "name": creds.get("name") or "",
+            },
+            "seed": str(random.randint(100000000, 999999999)),
             "sendCounter": 1,
-            "set_id": _card_set(card_id),
-            "to": to_city_id,
-            "type": "box",
+            "sendType": "collection",
+            "setId": _card_set(card_id),
+            "si": creds["cityId"],
         }
-        body = {"cityId": creds["cityId"], "to_cityId": to_city_id,
-                "box": json.dumps(box, separators=(",", ":"))}
+        # `SaveBox` (not `SendBox` — that is only the log tag) takes the recipient
+        # as `to_saveId`; the server rejects the call outright without it.
+        body = {
+            "saveId": creds["cityId"],
+            "to_saveId": to_city_id,
+            "box": json.dumps(box, separators=(",", ":")),
+        }
         query = f"?cityId={creds['cityId']}"
         retried = 0
         for attempt in range(3):
-            r = _card_api("SendBox", body, cfg,
+            r = _card_api("SaveBox", body, cfg,
                           bver=creds["bver"], fver=creds["fver"],
                           token=creds["token"], query=query, save_id=creds["cityId"])
             if r.get("ok") and isinstance(r.get("resp"), dict):
@@ -1094,26 +1235,59 @@ class HomescapesClient:
         }
 
     def cardsInbox(self, serial: str, config: dict | None = None) -> dict:
-        """CheckCity → the recipient's own inbox (so 'card received' is provable)."""
-        if _tsx is None:
-            return {"ok": False, "error": "frame codec not available"}
+        """Fresh inbox from GetSaveAndRegister — the same call the game makes on
+        launch, so `boxes` is exactly what the recipient's game would show."""
         creds = _CARD_CREDS.get(serial)
         if not creds:
-            return {"ok": False, "error": "load the account first (Refresh)"}
-        cfg = _card_config(config)
-        r = _card_api("CheckCity", {"cityId": creds["cityId"], "tz": 28800}, cfg,
-                      bver=creds["bver"], fver=creds["fver"], token=creds["token"],
-                      query=f"?cityId={creds['cityId']}")
+            # Same one-shot-process rule as cardsSend: open on demand.
+            if config:
+                cfg0 = _card_config(config)
+            else:
+                cfg0 = _card_config(None)
+            try:
+                loaded = self._register_creds(serial, cfg0)
+            except ClientError as exc:
+                return {"ok": False, "error": str(exc)}
+            creds = {
+                "cityId": loaded["cityId"], "token": loaded["token"],
+                "bver": loaded["bver"], "fver": loaded["fver"],
+                "name": loaded["name"], "pic": "",
+                "deviceId": loaded.get("deviceId") or "",
+                "host": cfg0["host"], "colId": cfg0["colId"], "colEt": cfg0["colEt"],
+            }
+            _CARD_CREDS[serial] = creds
+        if config:
+            cfg = _card_config(config)
+        elif creds.get("host"):
+            cfg = {"host": creds["host"], "colId": creds["colId"], "colEt": creds["colEt"]}
+        else:
+            cfg = _card_config(None)
+        body = {
+            "bver": creds["bver"],
+            "deviceId": creds.get("deviceId") or "",
+            "gver": GAME_GVER,
+            "platform": "g",
+            "pver": GAME_PVER,
+            "saveId": creds["cityId"],
+            "ts": time.time(),
+        }
+        r = _card_api("GetSaveAndRegister", body, cfg,
+                      bver=creds["bver"], fver=creds["fver"],
+                      token=creds["token"], save_id=creds["cityId"])
         if not (r.get("ok") and isinstance(r.get("resp"), dict)):
             status = int(r.get("status") or 0)
             return {"ok": False, "status": status,
                     "error": r.get("error") or f"HTTP {status}"}
         result = r["resp"].get("result")
         result = result if isinstance(result, dict) else {}
-        boxes = result.get("boxes")
+        saves = result.get("saves")
+        saves = [s for s in saves if isinstance(s, dict)] if isinstance(saves, list) else []
+        mine = next((s for s in saves if str(s.get("saveId")) == creds["cityId"]),
+                    saves[0] if saves else {})
+        boxes = mine.get("boxes")
         boxes = boxes if isinstance(boxes, list) else []
         return {"ok": True, "status": 200, "boxes": boxes, "total": len(boxes),
-                "name": result.get("name") or creds["name"], "checkedAt": _now_ms()}
+                "name": str(mine.get("name") or creds["name"]), "checkedAt": _now_ms()}
 
     def _read_save(self, adb: str, serial: str, pkg: str) -> tuple[str, bytes] | None:
         diag: list[str] = []
@@ -1595,7 +1769,8 @@ def _cli(argv: list[str]) -> int:
     p_restore = sub.add_parser("restore-backup")
     p_restore.add_argument("--serial", required=True)
 
-    sub.add_parser("cards-load")
+    p_cards_load = sub.add_parser("cards-load")
+    p_cards_load.add_argument("--serial", required=True)
     p_cards_send = sub.add_parser("cards-send")
     p_cards_send.add_argument("--serial", required=True)
     p_cards_send.add_argument("--to", required=True)
@@ -1604,7 +1779,8 @@ def _cli(argv: list[str]) -> int:
     p_cards_send_all.add_argument("--serial", required=True)
     p_cards_send_all.add_argument("--cards", required=True)
     p_cards_send_all.add_argument("--friends", required=True)
-    sub.add_parser("cards-inbox")
+    p_cards_inbox = sub.add_parser("cards-inbox")
+    p_cards_inbox.add_argument("--serial", required=True)
 
     sub.add_parser("proxy")
     sub.add_parser("update")
