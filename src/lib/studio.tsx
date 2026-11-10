@@ -184,6 +184,19 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       setOverview(ov);
       setValues(vals);
       setBootError(null);
+      /*
+       * Restore the device link. A session pulled from a client is named
+       * `device:<serial>`, so a reload can land back on the same client
+       * instead of claiming "Not connected" while its data is already on
+       * screen — the badge and the loaded save used to disagree until the
+       * operator pressed Connect a second time.
+       */
+      const pulled = /^device:(.+)$/.exec(ov.meta?.name ?? "");
+      const restored = pulled?.[1];
+      if (restored) {
+        setDeviceSerial(restored);
+        setSerial((prev) => prev ?? restored);
+      }
       return true;
     } catch (err) {
       // A 409 simply means no save is loaded yet — that is the normal first
