@@ -16,7 +16,15 @@
  * whole `/api/*` surface except `/api/health` and `/api/license/*` requires a
  * valid token.
  */
-import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -154,6 +162,27 @@ export function openToken(token: string): TokenPayload | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Constant-time string comparison.
+ *
+ * The passcode and key checks used `===`, which returns as soon as two strings
+ * differ — a timing oracle for a value a caller can submit unlimited times.
+ * Both sides are hashed first so the comparison is also length-independent.
+ */
+function safeEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a).digest();
+  const hb = createHash("sha256").update(b).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+/** True when `presented` is the configured owner passcode (both case-folded). */
+export function ownerPasscodeMatches(presented: string, configured: string): boolean {
+  const p = String(presented ?? "").toLowerCase();
+  const c = String(configured ?? "").toLowerCase();
+  if (c.length === 0 || p.length === 0) return false;
+  return safeEqual(p, c);
 }
 
 // ------------------------------------------------------------------- store --
@@ -326,7 +355,7 @@ export async function activate(rawKey: string, deviceId: string): Promise<{ toke
 
   const presented = String(rawKey ?? "").trim();
   const owner = ownerPasscode();
-  if (owner && presented.toLowerCase() === owner.toLowerCase()) {
+  if (owner && ownerPasscodeMatches(presented, owner)) {
     const payload: TokenPayload = { fp: fingerprint("OWNER"), dev, exp: Date.now() + TOKEN_TTL_MS, plan: "owner" };
     return {
       token: sealToken(payload),

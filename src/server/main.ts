@@ -9,9 +9,10 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { join, extname, normalize, resolve as resolvePath } from "node:path";
+import { extname, join, normalize, resolve as resolvePath } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -39,6 +40,7 @@ import {
   issue as licenseIssue,
   licenseRequired,
   LicenseError,
+  ownerPasscodeMatches,
   removeKey as licenseRemoveKey,
   requireLicense,
   resetDevices as licenseResetDevices,
@@ -53,11 +55,14 @@ import { asciiTokens, decodeBlkZstd, scanVsoDir, uniqueTokens } from "../engine/
 import {
   SessionError,
   createSession,
+  dropSession,
   listSessions,
   resolveSession,
   setActiveSession,
+  sessionCount,
   type SaveSession,
 } from "./session.ts";
+import * as limiter from "./ratelimit.ts";
 import {
   CONTENT_ROOTS,
   assertContentRoots,
@@ -85,7 +90,21 @@ const PORT = Number(process.env.PORT ?? process.env.HC_PORT ?? 8787);
  * on the LAN by accident. `HOST` overrides either.
  */
 const HOST = process.env.HOST ?? (process.env.PORT ? "0.0.0.0" : "127.0.0.1");
-const MAX_BODY = 96 * 1024 * 1024; // base64 inflates by ~4/3
+/**
+ * Is this a hosted (PaaS) deployment?
+ *
+ * `PORT` is injected by Render, so it was used as the signal — but any local
+ * run under a service manager that exports PORT silently flipped the server into
+ * "hosted" mode. `HC_HOSTED` is explicit and wins; PORT stays as the fallback so
+ * an unmodified Render blueprint keeps working.
+ */
+function hosted(): boolean {
+  const flag = (process.env.HC_HOSTED ?? "").trim().toLowerCase();
+  if (flag) return flag !== "0" && flag !== "false" && flag !== "no";
+  return Boolean(process.env.PORT);
+}
+
+const MAX_BODY = Number(process.env.HC_MAX_BODY ?? 64 * 1024 * 1024); // base64 inflates by ~4/3
 
 /** Reported by /api/health and used as the default client release version. */
 const APP_VERSION = process.env.CLIENT_VERSION?.trim() || "0.2.0";
@@ -192,6 +211,91 @@ function b64ToBytes(b64: string): Uint8Array {
 
 function bytesToB64(b: Uint8Array): string {
   return Buffer.from(b).toString("base64");
+}
+
+/**
+ * The caller behind this request.
+ *
+ * `requireLicense` returns the sealed token's payload (`fp` = the key's
+ * fingerprint, `dev` = the bound device) and `null` when the gate is off. Every
+ * session operation is scoped to `callerId()`, so two clients on one deployment
+ * can never see, edit or export each other's save.
+ */
+function callerId(req: IncomingMessage): string {
+  if (!licenseRequired()) return "local";
+  const payload = requireLicense(req);
+  return payload?.fp ?? "local";
+}
+
+/** Best-effort client address, honouring the proxy header Render sets. */
+function clientIp(req: IncomingMessage): string {
+  const xff = req.headers["x-forwarded-for"];
+  const raw = Array.isArray(xff) ? xff[0] : xff;
+  const first = (raw ?? "").split(",")[0]?.trim();
+  return first || req.socket.remoteAddress || "unknown";
+}
+
+/**
+ * CORS.
+ *
+ * The old answer was `access-control-allow-origin: *` on every response, on a
+ * server that (a) needs no credential when `HS_MASTER` is unset and (b) can read
+ * a caller-named file. Measured on a local run: `POST /api/session/load {path}`
+ * followed by `GET /api/export` from an `https://evil.example` origin returned
+ * the file's bytes. Any page the user visited could read the disk.
+ *
+ * Now only real loopback origins are allowed (the Vite dev server proxies
+ * `/api` anyway, so it does not need CORS at all), plus anything an operator
+ * names in `HC_ALLOW_ORIGIN` (comma separated; `*` opts back in to the old
+ * behaviour for a trusted private network).
+ */
+function applyCors(req: IncomingMessage, res: ServerResponse): void {
+  const origin = req.headers.origin;
+  if (!origin) return;
+  const allow = (process.env.HC_ALLOW_ORIGIN ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  res.setHeader("vary", "origin");
+  if (allow.includes("*") || allow.includes(origin)) {
+    res.setHeader("access-control-allow-origin", origin);
+    res.setHeader("access-control-allow-headers", "content-type, x-hs-token");
+    res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+    return;
+  }
+  try {
+    const u = new URL(origin);
+    const loopback =
+      u.hostname === "localhost" ||
+      u.hostname === "127.0.0.1" ||
+      u.hostname === "[::1]" ||
+      u.hostname === "::1";
+    if (loopback) {
+      res.setHeader("access-control-allow-origin", origin);
+      res.setHeader("access-control-allow-headers", "content-type, x-hs-token");
+      res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+    }
+  } catch {
+    /* opaque origin ("null") — send nothing */
+  }
+}
+
+/**
+ * A private scratch directory for one push.
+ *
+ * Both push paths used to share `<repo>/.push-tmp.db`. Two overlapping requests
+ * could therefore push each other's bytes to a device — the worst failure this
+ * tool can have — and a crash left a stale file the next request happily reused.
+ */
+async function withTempSave<T>(bytes: Uint8Array, fn: (path: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "hc-push-"));
+  const file = join(dir, "SaveGame.db");
+  try {
+    await writeFile(file, Buffer.from(bytes));
+    return await fn(file);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /** Run the Python ADB bridge and parse its single-line JSON reply. */
@@ -325,7 +429,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   const route = `${req.method} ${url.pathname}`;
 
   if (route === "GET /api/health") {
-    sendJson(res, 200, { ok: true, app: "Homescapes Save Studio", version: APP_VERSION });
+    sendJson(res, 200, {
+      ok: true,
+      app: "Homescapes Save Studio",
+      version: APP_VERSION,
+      hosted: hosted(),
+      licenseGate: licenseRequired(),
+      sessions: sessionCount(),
+      uptimeSec: Math.round(process.uptime()),
+    });
     return;
   }
 
@@ -353,9 +465,31 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 
   if (route === "POST /api/license/activate") {
+    const ip = clientIp(req);
+    /*
+     * Throttle BEFORE touching the store: this route and /api/license/owner are
+     * the only unauthenticated surfaces, so they are the only place a passcode
+     * or key can be guessed. Policy: 10 attempts/min, and 5 straight refusals
+     * open a cooldown that doubles (30 s → 15 min).
+     */
+    const verdict = limiter.take("activate", ip, limiter.POLICIES.license);
+    if (!verdict.ok) {
+      res.setHeader("retry-after", String(Math.ceil(verdict.retryAfterMs / 1000)));
+      throw new SessionError(
+        `too many attempts — retry in ${Math.max(1, Math.ceil(verdict.retryAfterMs / 1000))}s`,
+        429,
+      );
+    }
     const body = await readJson<{ key?: string; deviceId?: string }>(req);
-    const { token, snap } = await licenseActivate(body.key ?? "", body.deviceId ?? "");
-    sendJson(res, 200, { ok: true, token, license: snap });
+    let activated;
+    try {
+      activated = await licenseActivate(body.key ?? "", body.deviceId ?? "");
+    } catch (err) {
+      limiter.fail("activate", ip, limiter.POLICIES.license);
+      throw err;
+    }
+    limiter.succeed("activate", ip);
+    sendJson(res, 200, { ok: true, token: activated.token, license: activated.snap });
     return;
   }
 
@@ -380,19 +514,29 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // Two credentials open the console: the HS_OWNER passcode (so the owner can
     // issue the very first key before any token exists) or an owner token
     // already minted by activating with that passcode.
+    const ip = clientIp(req);
+    const verdict = limiter.take("owner", ip, limiter.POLICIES.license);
+    if (!verdict.ok) {
+      res.setHeader("retry-after", String(Math.ceil(verdict.retryAfterMs / 1000)));
+      throw new SessionError(
+        `too many attempts — retry in ${Math.max(1, Math.ceil(verdict.retryAfterMs / 1000))}s`,
+        429,
+      );
+    }
     const body = await readJson<OwnerBody>(req);
     const passcode = String(body.passcode ?? "").trim();
     const configured = process.env.HS_OWNER?.trim() ?? "";
     const token = tokenFromHeader(req);
-    const viaPasscode =
-      configured.length > 0 && passcode.length > 0 && passcode.toLowerCase() === configured.toLowerCase();
+    const viaPasscode = ownerPasscodeMatches(passcode, configured);
     const viaToken = token?.plan === "owner";
     if (!viaPasscode && !viaToken) {
+      limiter.fail("owner", ip, limiter.POLICIES.license);
       if (configured.length === 0) {
         throw new SessionError("HS_OWNER is not configured on this server", 503);
       }
       throw new SessionError(passcode.length > 0 ? "Wrong owner passcode" : "Owner access required", 401);
     }
+    limiter.succeed("owner", ip);
     if (body.action === "issue") {
       const issued = await licenseIssue(body);
       sendJson(res, 200, { ok: true, issued });
@@ -451,11 +595,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     );
   }
 
-  // Everything below this line edits a save, so it needs a valid token.
-  requireLicense(req);
+  // Everything below this line edits a save, so it needs a valid token. The
+  // caller's fingerprint also scopes the session store: two clients share the
+  // process, never a save.
+  const owner = callerId(req);
 
   if (route === "GET /api/sessions") {
-    sendJson(res, 200, { ok: true, sessions: listSessions() });
+    sendJson(res, 200, { ok: true, sessions: listSessions(owner) });
     return;
   }
 
@@ -469,7 +615,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } else if (body.path) {
       // A hosted deployment must not let a caller name a file on the server's
       // own disk. Path loads stay available for local runs only.
-      if (process.env.PORT) {
+      if (hosted()) {
         throw new SessionError("path loads are disabled on a hosted deployment — upload the file (b64) instead", 400);
       }
       const full = resolvePath(body.path);
@@ -478,23 +624,23 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } else {
       throw new SessionError("provide either `b64` or `path`", 400);
     }
-    const session = createSession(name, bytes);
+    const session = createSession(name, bytes, owner);
     sendJson(res, 200, { ok: true, overview: session.overview() });
     return;
   }
 
   if (route === "GET /api/overview") {
-    sendJson(res, 200, { ok: true, overview: resolveSession(url.searchParams.get("sessionId") ?? undefined).overview() });
+    sendJson(res, 200, { ok: true, overview: resolveSession(url.searchParams.get("sessionId") ?? undefined, owner).overview() });
     return;
   }
 
   if (route === "GET /api/values") {
-    sendJson(res, 200, { ok: true, values: resolveSession(url.searchParams.get("sessionId") ?? undefined).values() });
+    sendJson(res, 200, { ok: true, values: resolveSession(url.searchParams.get("sessionId") ?? undefined, owner).values() });
     return;
   }
 
   if (route === "GET /api/discover") {
-    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined);
+    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined, owner);
     const prefix = url.searchParams.get("prefix") ?? "";
     const limit = Number(url.searchParams.get("limit") ?? 2000);
     const q = url.searchParams.get("q") ?? "";
@@ -503,7 +649,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 
   if (route === "GET /api/field") {
-    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined);
+    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined, owner);
     const path = url.searchParams.get("path") ?? "";
     const save = openSave(session.plain);
     if (!save.has(path)) throw new SessionError(`no such field: ${path}`, 404);
@@ -514,7 +660,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   if (route === "POST /api/apply") {
     const body = await readJson<ApplyBody>(req);
     if (!Array.isArray(body.ops)) throw new SessionError("`ops` must be an array", 400);
-    const session = resolveSession(body.sessionId);
+    const session = resolveSession(body.sessionId, owner);
     const result = session.apply(body.ops, { refreshIntegrity: body.refreshIntegrity ?? true });
     sendJson(res, result.ok ? 200 : 400, {
       ok: result.ok,
@@ -551,15 +697,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
    */
   if (route === "POST /api/clone-content") {
     const body = await readJson<{
-      path?: string;
       serial: string;
       roots?: string[];
-      limit?: number;
     }>(req);
     if (!body.serial) {
       throw new SessionError("`serial` is required", 400);
     }
-    const srcPath = body.path ? resolvePath(body.path) : IGG_SOURCE;
+    /*
+     * The source is ALWAYS the built-in account. A caller-supplied `path` used
+     * to be honoured here (it exists only for offline fixtures), which meant
+     * this route would read any file the server process could read — on a
+     * hosted deployment too, unlike /api/session/load, which refuses paths
+     * there. One source, one code path.
+     */
+    const srcPath = IGG_SOURCE;
     let srcBytes: Uint8Array;
     try {
       srcBytes = new Uint8Array(await readFile(srcPath));
@@ -576,7 +727,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       throw new SessionError((err as Error).message, 400);
     }
 
-    const source = createSession("content-source", srcBytes, { active: false });
+    const source = createSession("content-source", srcBytes, owner, { active: false });
 
     const reply = await callBridge(["pull", "--serial", body.serial]);
     if (!(reply.ok && reply.b64)) {
@@ -588,7 +739,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // pointer swapped while the UI still wrote to the previous session — a
     // split-brain where Push exported stale pre-clone bytes. Keep it passive
     // and flip the pointer on success.
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), { active: false });
+    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), owner, { active: false });
 
     const ops: EditOp[] = [];
     const perRoot: Array<{ root: string; fields: number; mode: string; skipped: number }> = [];
@@ -736,7 +887,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       perRoot.push({ root, fields, mode: spliced > 0 ? "splice" : "leaves", skipped });
     }
     if (ops.length === 0) {
-      throw new SessionError(`no content fields found in ${body.path}`, 400);
+      throw new SessionError("no content fields found on the built-in account", 400);
     }
     // Shallow paths first so a parent splice lands before anything nested.
     ops.sort((a, b) => (a.path.match(/\./g)?.length ?? 0) - (b.path.match(/\./g)?.length ?? 0));
@@ -822,7 +973,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const body = req.method === "POST" ? await readJson<{ sessionId?: string }>(req) : null;
     const sessionId = body?.sessionId ?? url.searchParams.get("sessionId");
     if (!sessionId) throw new SessionError("`sessionId` is required", 400);
-    const session = resolveSession(sessionId);
+    const session = resolveSession(sessionId, owner);
     let plan;
     try {
       plan = MAX_GP(session.plain);
@@ -881,7 +1032,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     } catch {
       throw new SessionError(`the built-in account is missing: ${IGG_SOURCE}`, 400);
     }
-    const donor = createSession("season-pass-source", srcBytes, { active: false });
+    const donor = createSession("season-pass-source", srcBytes, owner, { active: false });
 
     const reply = await callBridge(["pull", "--serial", body.serial]);
     if (!(reply.ok && reply.b64)) {
@@ -891,7 +1042,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     // Passive until the season-pass set actually applies — a failed plan or
     // apply must not steal the active pointer away from the session the UI is
     // editing (see clone-content above).
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), { active: false });
+    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), owner, { active: false });
 
     let plan;
     try {
@@ -917,15 +1068,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     setActiveSession(target.id);
 
     // Push now — this route is the one-tap action, not a staged session.
-    const tmp = join(DIST, "..", ".push-tmp.db");
-    const { writeFile, rm } = await import("node:fs/promises");
-    await writeFile(tmp, Buffer.from(target.exportContainer()));
-    let pushed: any;
-    try {
-      pushed = await callBridge(["push", "--serial", body.serial, "--in", tmp]);
-    } finally {
-      await rm(tmp, { force: true });
-    }
+    // A private temp dir per request: two operators pushing at once must never
+    // write over each other's file.
+    const pushed: any = await withTempSave(target.exportContainer(), (tmp) =>
+      callBridge(["push", "--serial", body.serial, "--in", tmp]),
+    );
 
     sendJson(res, pushed?.ok ? 200 : 400, {
       ok: Boolean(pushed?.ok),
@@ -953,7 +1100,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 
   if (route === "GET /api/cosmetics/state") {
-    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined);
+    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined, owner);
     const save = openSave(session.plain);
     const state: Record<string, { owned: string[]; equipped: string | null }> = {};
     for (const g of COSMETICS) {
@@ -977,7 +1124,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
   if (route === "POST /api/cosmetics") {
     const body = await readJson<CosmeticsBody>(req);
-    const session = resolveSession(body.sessionId);
+    const session = resolveSession(body.sessionId, owner);
     const save = openSave(session.plain);
     const ops: EditOp[] = [];
     try {
@@ -1030,7 +1177,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
         400,
       );
     }
-    const session = resolveSession(body.sessionId);
+    const session = resolveSession(body.sessionId, owner);
     const save = openSave(session.plain);
     if (!readAlbum(save).present) {
       throw new SessionError(
@@ -1089,16 +1236,34 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   }
 
   if (route === "POST /api/session/reset") {
-    const body = await readJson<{ sessionId?: string; fromSessionId?: string }>(req);
-    const session = resolveSession(body.sessionId);
-    // Reload the ORIGINAL container so the user can start over.
-    const fresh = createSession(session.name + " (reset)", session.container);
-    sendJson(res, 200, { ok: true, overview: fresh.overview() });
+    /*
+     * Start over. This used to build a SECOND session around the same container
+     * and return it: the original stayed in the registry (and in memory) for the
+     * life of the process, and the UI kept editing whichever one the
+     * "newest session" fallback happened to return. Rewinding in place is what
+     * the button means.
+     */
+    const body = await readJson<{ sessionId?: string }>(req);
+    const session = resolveSession(body.sessionId, owner);
+    session.revert();
+    sendJson(res, 200, { ok: true, overview: session.overview() });
+    return;
+  }
+
+  if (route === "POST /api/session/close") {
+    // Release the memory a save holds (~25 MB) without waiting for the TTL.
+    const body = await readJson<{ sessionId?: string }>(req);
+    const closed = body.sessionId ? dropSession(body.sessionId, owner) : false;
+    sendJson(res, closed ? 200 : 404, {
+      ok: closed,
+      error: closed ? undefined : "no such session",
+      loaded: listSessions(owner).length,
+    });
     return;
   }
 
   if (route === "GET /api/export") {
-    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined);
+    const session = resolveSession(url.searchParams.get("sessionId") ?? undefined, owner);
     const data = Buffer.from(session.exportContainer());
     res.writeHead(200, {
       "content-type": "application/octet-stream",
@@ -1121,7 +1286,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!body.serial) throw new SessionError("`serial` is required", 400);
     const reply = await callBridge(["pull", "--serial", body.serial]);
     if (reply.ok && reply.b64) {
-      const session = createSession(`device:${body.serial}`, b64ToBytes(reply.b64));
+      const session = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), owner);
       sendJson(res, 200, { ok: true, file: reply.file, package: reply.package, overview: session.overview() });
       return;
     }
@@ -1132,19 +1297,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   if (route === "POST /api/device/push") {
     const body = await readJson<{ serial: string; restart?: boolean; sessionId?: string }>(req);
     if (!body.serial) throw new SessionError("`serial` is required", 400);
-    const session = resolveSession(body.sessionId);
-    const tmp = join(DIST, "..", ".push-tmp.db");
-    const data = Buffer.from(session.exportContainer());
-    const { writeFile, rm } = await import("node:fs/promises");
-    await writeFile(tmp, data);
-    try {
+    const session = resolveSession(body.sessionId, owner);
+    const reply = await withTempSave(session.exportContainer(), (tmp) => {
       const args = ["push", "--serial", body.serial, "--in", tmp];
       if (body.restart === false) args.push("--no-restart");
-      const reply = await callBridge(args);
-      sendJson(res, reply.ok ? 200 : 400, reply);
-    } finally {
-      await rm(tmp, { force: true });
-    }
+      return callBridge(args);
+    });
+    sendJson(res, reply.ok ? 200 : 400, reply);
     return;
   }
 
@@ -1247,10 +1406,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
 const server = createServer((req, res) => {
   void (async () => {
-    // Dev server (Vite) runs on another origin; allow it.
-    res.setHeader("access-control-allow-origin", "*");
-    res.setHeader("access-control-allow-headers", "content-type");
-    res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+    applyCors(req, res);
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
@@ -1274,6 +1430,43 @@ const server = createServer((req, res) => {
   })();
 });
 
+/*
+ * A port collision used to surface as a raw `Unhandled 'error' event` stack.
+ * A save editor that dies with a node traceback tells the operator nothing, so
+ * the common cases get a sentence they can act on.
+ */
+server.on("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    process.stderr.write(
+      `Port ${PORT} is already in use. Close the other studio instance, or start this one with ` +
+        `PORT=<another port> npm start.\n`,
+    );
+  } else if (err.code === "EACCES") {
+    process.stderr.write(`Not allowed to bind ${HOST}:${PORT} — pick a port above 1024.\n`);
+  } else {
+    process.stderr.write(`Server error: ${err.message}\n`);
+  }
+  process.exitCode = 1;
+});
+
+// Reap sessions that have gone idle so a forgotten tab cannot pin a save (and
+// its ~25 MB) for the life of the process.
+const sweepTimer = setInterval(() => {
+  sessionCount();
+}, 5 * 60_000);
+sweepTimer.unref();
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    server.close(() => process.exit(0));
+    // Do not hang on keep-alive sockets.
+    setTimeout(() => process.exit(0), 2000).unref();
+  });
+}
+
 server.listen(PORT, HOST, () => {
-  process.stdout.write(`Homescapes Save Studio listening on http://${HOST}:${PORT}\n`);
+  process.stdout.write(
+    `Homescapes Save Studio listening on http://${HOST}:${PORT}` +
+      ` (${hosted() ? "hosted" : "local"}${licenseRequired() ? ", license gate ON" : ", no license gate"})\n`,
+  );
 });

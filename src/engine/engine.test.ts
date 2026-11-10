@@ -9,6 +9,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { scanSpans, valueText } from "./json-span.ts";
 import {
   applyEdits,
@@ -29,9 +30,25 @@ import {
 import { COSMETICS, cosmeticOps, equipManyOps, equipOps, grantOps } from "./cosmetics.ts";
 import { runApply } from "./operations.ts";
 
+/*
+ * Integration cases need a real save. Resolution order:
+ *
+ *   1. `HS_FIXTURE` (a full-size save pulled off a device — what these tests
+ *      were originally written against);
+ *   2. the save this repository actually ships (`data/IGG-account.db`), which is
+ *      a real 4.3 MB container and therefore exercises the same scanner,
+ *      patcher and integrity code paths;
+ *   3. skip.
+ *
+ * Before this, the only fallback was one developer's Windows Downloads path, so
+ * on CI (and on any machine but that one) fourteen integration cases silently
+ * skipped — the engine's most important guarantees were never checked
+ * automatically.
+ */
+const SHIPPED_FIXTURE = fileURLToPath(new URL("../../data/IGG-account.db", import.meta.url));
 const FIXTURE =
   process.env.HS_FIXTURE ??
-  "C:\\Users\\User\\Downloads\\Telegram Desktop\\SaveGame.db";
+  (existsSync(SHIPPED_FIXTURE) ? SHIPPED_FIXTURE : "C:\\Users\\User\\Downloads\\Telegram Desktop\\SaveGame.db");
 
 const haveFixture = existsSync(FIXTURE);
 
@@ -40,8 +57,14 @@ const haveFixture = existsSync(FIXTURE);
  * G:\hs_build). These are the ONLY files that prove the f205 key: the legacy
  * sample never exercised it.
  */
-const LIVE_FIXTURE = process.env.HS_LIVE ?? "G:\\hs_build\\live1.db";
-const haveLiveFixture = existsSync(LIVE_FIXTURE);
+/*
+ * The XOR-wrapped 9.2.101 container is the only thing that proves the f205 key.
+ * It is not shipped (it is a live player save and the repo already carries one),
+ * so these cases stay opt-in via `HS_LIVE` — but the skip message now names the
+ * variable, so a failure reads as "not configured", not "broken".
+ */
+const LIVE_FIXTURE = process.env.HS_LIVE ?? "";
+const haveLiveFixture = LIVE_FIXTURE.length > 0 && existsSync(LIVE_FIXTURE);
 const loadFixture = (): Uint8Array => new Uint8Array(readFileSync(FIXTURE));
 
 // --------------------------------------------------------------- pure unit --
@@ -217,11 +240,24 @@ test(
   { skip: haveFixture ? false : `fixture not found at ${FIXTURE}` },
   () => {
     const raw = loadFixture();
-    assert.equal(raw.length, 4553170);
     const idx = scanSpans(raw);
     assert.equal(idx.rootType, "object");
-    assert.equal(idx.rootEnd, raw.length, "root must consume the whole file");
-    assert.equal(idx.members.size, 130191);
+    /*
+     * The scanner must consume the entire container and record every member.
+     * The byte LENGTH is deliberately not asserted: the two real fixtures in use
+     * (the shipped `data/IGG-account.db` and the full-size device pull) hold the
+     * same 130,191 members but differ by ~180 KB of whitespace and a trailing
+     * NUL. Only the trailing NUL/whitespace may sit outside the root.
+     */
+    assert.ok(idx.rootEnd <= raw.length, "root cannot extend past the buffer");
+    for (let i = idx.rootEnd; i < raw.length; i++) {
+      const b = raw[i]!;
+      assert.ok(
+        b === 0x00 || b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d,
+        `only NUL/whitespace may follow the root — found 0x${b.toString(16)} at ${i}`,
+      );
+    }
+    assert.equal(idx.members.size, 130191, "every member of the known save is indexed");
   },
 );
 

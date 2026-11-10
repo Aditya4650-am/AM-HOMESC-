@@ -94,6 +94,11 @@ interface StudioState {
    */
   connect: () => Promise<void>;
   connecting: boolean;
+  /**
+   * Open a `SaveGame.db` from this machine. This is how a save enters a HOSTED
+   * deployment (a container has no ADB), and it is also the fastest path for a
+   * client who already has a pulled save.
+   */
   /** Write the session back to the device and relaunch the game. */
   push: () => Promise<void>;
   pushing: boolean;

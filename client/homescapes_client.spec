@@ -6,7 +6,10 @@
 import os
 
 block_cipher = None
-ROOT = os.path.abspath(os.path.dirname(SPECPATH))
+# The spec lives in client/, so ROOT must be that directory — it used to be its
+# parent, which meant `client/adb/` (where build_exe.bat tells you to put
+# adb.exe) was never bundled and the shipped EXE could not find ADB at all.
+ROOT = os.path.abspath(SPECPATH)
 
 adb_dir = os.path.join(ROOT, "adb")
 datas = []

@@ -158,4 +158,4 @@ export {
   type SeasonTicketOptions,
 } from "./season-ticket.ts";
 
-export { MAX_GP } from "./MAX_GP.ts";
+export { MAX_GP, planMaxGP, MAX_GP_POINTS, type MAXGPPlan } from "./MAX_GP.ts";

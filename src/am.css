@@ -376,6 +376,61 @@
   gap: 6px;
 }
 
+/* ---------------------------------------------------------------- sidebar --
+ * Grouped navigation. The tool now exposes 25 real sections; a single column of
+ * 58px rows pushed everything below "Avatars" off-screen. Each group gets a
+ * caption and a two-column grid of compact chips, so the whole surface stays
+ * visible (and the sidebar still scrolls if a window is very short).
+ */
+.am-navgroup {
+  flex: 0 0 auto;
+  margin-top: 12px;
+}
+
+.am-navgroup-title {
+  margin: 0 0 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #8798b8;
+}
+
+.am-nav--grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 0;
+}
+
+.am-nav--grid .am-item {
+  width: 100%;
+  margin-left: 0;
+  height: 42px;
+  padding: 0 8px 0 6px;
+  gap: 6px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #42598e;
+}
+
+.am-nav--grid .am-item-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+}
+
+.am-nav--grid .am-item-label {
+  font-size: 13px;
+}
+
+.am-nav--grid .am-item--active {
+  background: #e1eefd;
+  color: #0b5af8;
+  font-weight: 600;
+}
+
 .am-sep {
   flex: 0 0 auto;
   height: 1px;

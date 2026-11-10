@@ -18,6 +18,11 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Vite blocks unknown Host headers by default, which made `npm run dev`
+    // unusable behind any tunnel or hosted preview ("Blocked request. This host
+    // is not allowed."). The dev server is a local tool, and the API proxy below
+    // is the only backend it can reach, so allowing the host is safe here.
+    allowedHosts: true,
     proxy: {
       "/api": {
         target: API_TARGET,
