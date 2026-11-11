@@ -421,30 +421,50 @@ export function CardsSection() {
         toast.warn("No recipient", "Tick a friend from the list or type a save ID.");
         return;
       }
-      const d = Math.min(DELAY_MAX, Math.max(DELAY_MIN, Math.floor(Number(delay) || DELAY_DEFAULT)));
-      pushLog(
-        "info",
-        "Sending cards via Playrix SendBox",
-        `${selectedCards.length} card${selectedCards.length === 1 ? "" : "s"} → ${recipients.length} recipient${
-          recipients.length === 1 ? "" : "s"
-        } · ${copies} cop${copies === 1 ? "y" : "ies"}`,
-      );
-      const res = await api.cardsSend({
-        serial: serial ?? "",
-        friends: recipients,
-        cards: selectedCards.map((n) => cardIdOf(n)),
-      });
-      if (res.ok) {
-        pushLog("ok", "All cards sent", `${res.sent}/${res.total} SendBox deliveries confirmed`);
-        toast.ok(
-          "Cards sent",
-          `${res.sent}/${res.total} cards delivered through Playrix SendBox — each one got its own ` +
-            "card-received popup.",
+      if (!serial) {
+        // Cards go out through the user's own device (SendBox), never through
+        // the hosted server — without a serial the request can only 400.
+        toast.warn(
+          "No device connected",
+          "Connect an emulator with the game running (or use the desktop EXE) so cards can be sent from your device.",
         );
         return;
       }
-      pushLog("err", "Card send batch finished with failures", JSON.stringify(res.failed ?? []).slice(0, 1200));
-      toast.err("Card send finished", `${res.sent ?? 0}/${res.total ?? 0} delivered · ${(res.failed ?? []).length} failed.`);
+      const d = Math.min(DELAY_MAX, Math.max(DELAY_MIN, Math.floor(Number(delay) || DELAY_DEFAULT)));
+      setBusy(true);
+      try {
+        pushLog(
+          "info",
+          "Sending cards via Playrix SendBox",
+          `${selectedCards.length} card${selectedCards.length === 1 ? "" : "s"} → ${recipients.length} recipient${
+            recipients.length === 1 ? "" : "s"
+          } · ${copies} cop${copies === 1 ? "y" : "ies"}`,
+        );
+        const res = await api.cardsSend({
+          serial: serial ?? "",
+          friends: recipients,
+          cards: selectedCards.map((n) => cardIdOf(n)),
+        });
+        if (res.ok) {
+          pushLog("ok", "All cards sent", `${res.sent}/${res.total} SendBox deliveries confirmed`);
+          toast.ok(
+            "Cards sent",
+            `${res.sent}/${res.total} cards delivered through Playrix SendBox — each one got its own ` +
+              "card-received popup.",
+          );
+          return;
+        }
+        pushLog("err", "Card send batch finished with failures", JSON.stringify(res.failed ?? []).slice(0, 1200));
+        toast.err("Card send finished", `${res.sent ?? 0}/${res.total ?? 0} delivered · ${(res.failed ?? []).length} failed.`);
+      } catch (err) {
+        // A rejected fetch used to become an unhandled rejection: the button
+        // did nothing at all. Every failure now lands in the log AND a toast.
+        const msg = err instanceof Error ? err.message : String(err);
+        pushLog("err", "Cards not sent", msg);
+        toast.err("Cards not sent", msg);
+      } finally {
+        setBusy(false);
+      }
       return;
     }
 

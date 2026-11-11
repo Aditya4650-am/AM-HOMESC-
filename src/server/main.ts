@@ -1242,7 +1242,19 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       "--friends",
       body.friends.join(","),
     ]);
-    sendJson(res, reply.ok ? 200 : 400, reply);
+    if (reply?.ok) {
+      sendJson(res, 200, reply);
+      return;
+    }
+    // A partial batch has no `error` key of its own, and the client's fetch
+    // wrapper throws on ok:false — without a message the UI would show a
+    // generic "request failed". Say exactly what got through.
+    sendJson(res, 400, {
+      ...reply,
+      error:
+        reply?.error ??
+        `${reply?.sent ?? 0}/${reply?.total ?? 0} delivered · ${(reply?.failed ?? []).length} failed`,
+    });
     return;
   }
 

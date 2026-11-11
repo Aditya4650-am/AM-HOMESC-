@@ -1794,6 +1794,61 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                 self._respond_json(200, {"ok": True, **reply})
                 return
 
+            # Cards -> a friend is a LIVE device flow: every (card, friend)
+            # pair is a SendBox round-trip through the user's own emulator, so
+            # it must run on THIS machine — the hosted server has no adb. Same
+            # rule as pull/push: local device, remote save logic.
+            if self.command == "POST" and path == "/api/cards/send":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                raw_cards = payload.get("cards")
+                raw_friends = payload.get("friends")
+                cards = (
+                    [str(c).strip() for c in raw_cards if str(c).strip()]
+                    if isinstance(raw_cards, list)
+                    else []
+                )
+                friends = (
+                    [str(f).strip() for f in raw_friends if str(f).strip()]
+                    if isinstance(raw_friends, list)
+                    else []
+                )
+                if not serial:
+                    self._respond_json(400, {"ok": False, "error": "`serial` is required"})
+                    return
+                if not cards or not friends:
+                    self._respond_json(
+                        400,
+                        {"ok": False, "error": "`cards` and `friends` must be non-empty arrays"},
+                    )
+                    return
+                try:
+                    reply = client.cardsSendAll(serial, cards, friends, config={})
+                except ClientError as exc:
+                    self._respond_json(400, {"ok": False, "error": str(exc)})
+                    return
+                except Exception as exc:  # never leave the fetch hanging
+                    self._respond_json(400, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                    return
+                if reply.get("ok"):
+                    self._respond_json(200, reply)
+                    return
+                # Partial/total failure still carries the per-pair detail; give
+                # the UI a human summary too so the toast is never generic.
+                self._respond_json(
+                    400,
+                    {
+                        **reply,
+                        "error": reply.get("error")
+                        or f"{reply.get('sent', 0)}/{reply.get('total', 0)} delivered · "
+                        f"{len(reply.get('failed') or [])} failed",
+                    },
+                )
+                return
+
             status, upstream_headers, data = self._upstream(self.command, self.path, self._body() or None, token)
             self.send_response(status)
             # Repeat the studio's own Content-Type. This header decides whether
