@@ -47,6 +47,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib import error as _urlerror
 from urllib import parse as _urlparse
 from urllib import request as _urlrequest
 
@@ -1696,14 +1697,45 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                 lk = key.lower()
                 if lk in ("content-type", "x-hs-token", "authorization", "x-device-id", "accept", "user-agent"):
                     req.add_header(key, value)
-            with _urlrequest.urlopen(req, timeout=300) as resp:
-                # The RESPONSE headers must come back too. The browser refuses
-                # a module script or stylesheet served with the wrong MIME
-                # type, so the proxy has to repeat what the studio actually
-                # said about the body — never infer it from the request (a GET
-                # carries no content-type at all, which made every page come
-                # back as application/json and render as raw source).
-                return resp.status, dict(resp.headers.items()), resp.read()
+            try:
+                with _urlrequest.urlopen(req, timeout=300) as resp:
+                    # The RESPONSE headers must come back too. The browser
+                    # refuses a module script or stylesheet served with the
+                    # wrong MIME type, so the proxy has to repeat what the
+                    # studio actually said about the body — never infer it
+                    # from the request (a GET carries no content-type at all,
+                    # which made every page come back as application/json and
+                    # render as raw source).
+                    return resp.status, dict(resp.headers.items()), resp.read()
+            except _urlerror.HTTPError as exc:
+                # urllib RAISES on any 4xx/5xx. Uncaught, the exception
+                # escaped _dispatch and the proxy closed the socket with no
+                # reply at all — the browser's fetch() then rejects with
+                # "Failed to fetch", which is exactly the error the Cards
+                # Send button showed. Pass the studio's own error straight
+                # through instead: the UI can read its JSON and say why.
+                try:
+                    data = exc.read() or b""
+                except Exception:
+                    data = b""
+                headers = dict(exc.headers.items()) if exc.headers else {}
+                if data:
+                    return exc.code, headers, data
+                # No body -> synthesize one so api.request never hits the
+                # "non-JSON body" path either.
+                payload = json.dumps(
+                    {"ok": False, "error": f"server returned {exc.code} {exc.reason}"}
+                ).encode()
+                headers["content-type"] = "application/json"
+                return exc.code, headers, payload
+            except Exception as exc:  # URLError, timeout, DNS, TLS, reset…
+                # Never drop the connection: answer 502 with a readable JSON
+                # reason so the front end shows "Cards not sent — <why>"
+                # instead of a dead fetch.
+                payload = json.dumps(
+                    {"ok": False, "error": f"studio unreachable ({type(exc).__name__}): {exc}"}
+                ).encode()
+                return 502, {"content-type": "application/json"}, payload
 
         # -- dispatch
         def _dispatch(self) -> None:
@@ -1867,17 +1899,34 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
             self.end_headers()
             self.wfile.write(data)
 
+        def _safe_dispatch(self) -> None:
+            # Last line of defence: ANY exception (JSON parse, a typo in a
+            # new local route, a half-written socket) must still produce a
+            # readable reply. Before this, an exception meant the connection
+            # closed with no response and the browser reported the opaque
+            # "Failed to fetch" the Cards Send button was showing.
+            try:
+                self._dispatch()
+            except Exception as exc:
+                try:
+                    self._respond_json(
+                        500,
+                        {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+                    )
+                except Exception:
+                    pass  # socket already gone — nothing more to say
+
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
-            self._dispatch()
+            self._safe_dispatch()
 
         def do_POST(self) -> None:  # noqa: N802
-            self._dispatch()
+            self._safe_dispatch()
 
         def do_PUT(self) -> None:  # noqa: N802
-            self._dispatch()
+            self._safe_dispatch()
 
         def do_DELETE(self) -> None:  # noqa: N802
-            self._dispatch()
+            self._safe_dispatch()
 
     return ProxyHandler
 
