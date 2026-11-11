@@ -473,11 +473,20 @@ _AAID_FILES = (
 
 def _device_ad_id(adb: str, serial: str) -> str:
     """The install's advertising id, or "" when GMS is missing/unreadable."""
-    for remote in _AAID_FILES:
-        for args in (
-            ["-s", serial, "exec-out", "su", "-c", f"cat '{remote}'"],
-            ["-s", serial, "shell", f"su -c 'cat {remote}'"],
-        ):
+    # Every su spelling that has proven to work on rooted emulators — the
+    # same set _pull_raw_file uses. Some builds' su only accepts `su 0 cat`,
+    # others need the path quoted; trying just one form made the whole card
+    # send fail with "could not read the device advertising id" on instances
+    # where a different form works fine.
+    forms = (
+        ["-s", serial, "exec-out", "su", "-c", "cat '{p}'"],
+        ["-s", serial, "exec-out", "su", "0", "cat", "{p}"],
+        ["-s", serial, "shell", "su -c 'cat {p}'"],
+        ["-s", serial, "exec-out", "su", "-c", 'cat "{p}"'],
+    )
+    for remote in (*_AAID_FILES,):
+        for form in forms:
+            args = [a.replace("{p}", remote) for a in form]
             code, out, _ = _run_adb(adb, args, timeout=20)
             if code != 0 or not out:
                 continue
@@ -492,6 +501,35 @@ def _device_ad_id(adb: str, serial: str) -> str:
                           r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b', txt)
             if m:
                 return m.group(1)
+    # Last resort: the file may sit under a user-0 path we did not guess, or
+    # GMS may be installed as a different package. Ask the device where it is.
+    code, out, _ = _run_adb(
+        adb,
+        ["-s", serial, "exec-out", "su", "-c",
+         "find /data -name adid_settings.xml 2>/dev/null"],
+        timeout=30,
+    )
+    if code == 0 and out and not _looks_like_shell_error(out):
+        for remote in out.decode("utf-8", "replace").split():
+            if not remote.startswith("/"):
+                continue
+            for form in forms:
+                args = [a.replace("{p}", remote) for a in form]
+                code, out2, _ = _run_adb(adb, args, timeout=20)
+                if code != 0 or not out2:
+                    continue
+                txt = out2.decode("utf-8", "replace")
+                if _looks_like_shell_error(txt):
+                    continue
+                m = re.search(
+                    r'name="adid_key"\s*value="([0-9a-fA-F-]{32,36})"', txt)
+                if m:
+                    return m.group(1)
+                m = re.search(
+                    r'\b([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-'
+                    r'[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b', txt)
+                if m:
+                    return m.group(1)
     return ""
 
 
@@ -1061,6 +1099,28 @@ class HomescapesClient:
             "saves": len(saves),
         }
 
+    def _ensure_creds(self, serial: str, config: dict | None) -> dict:
+        """Cached account credentials for this device — register once.
+
+        Both the per-card sender and the batch preflight go through here, so a
+        successful registration happens exactly once per process and a failed
+        one raises a single ClientError instead of being retried for every
+        (card, friend) pair.
+        """
+        creds = _CARD_CREDS.get(serial)
+        if creds:
+            return creds
+        cfg = self._card_cfg(serial, config)
+        fresh = self._register_creds(serial, cfg)
+        _CARD_CREDS[serial] = {
+            "cityId": fresh["cityId"], "token": fresh["token"],
+            "bver": fresh["bver"], "fver": fresh["fver"],
+            "name": fresh["name"], "pic": "",
+            "deviceId": fresh.get("deviceId") or "",
+            "host": cfg["host"], "colId": cfg["colId"], "colEt": cfg["colEt"],
+        }
+        return _CARD_CREDS[serial]
+
     def cardsLoad(self, serial: str, config: dict | None = None) -> dict:
         """Re-open the account, stash the token, and confirm it with CheckCity.
 
@@ -1121,27 +1181,15 @@ class HomescapesClient:
         # Config precedence: explicit param (current server env) → what
         # cardsLoad stashed (host must match the load that minted the token)
         # → built-in defaults.
-        if config:
-            cfg = _card_config(config)
-        elif creds and creds.get("host"):
-            cfg = {"host": creds["host"], "colId": creds["colId"], "colEt": creds["colEt"]}
-        else:
-            cfg = _card_config(None)
+        cfg = self._card_cfg(serial, config)
         if not creds:
             # The bridge is a one-shot process, so a send can legitimately arrive
             # with nothing cached — open the account on demand instead of making
             # every caller remember to Refresh first.
             try:
-                creds = self._register_creds(serial, cfg)
+                creds = self._ensure_creds(serial, config)
             except ClientError as exc:
                 return {"ok": False, "status": "error", "error": str(exc)}
-            _CARD_CREDS[serial] = {
-                "cityId": creds["cityId"], "token": creds["token"],
-                "bver": creds["bver"], "fver": creds["fver"],
-                "name": creds["name"], "pic": "",
-                "deviceId": creds.get("deviceId") or "",
-                "host": cfg["host"], "colId": cfg["colId"], "colEt": cfg["colEt"],
-            }
         col_id = cfg["colId"]
         # The box Playrix stores verbatim on the recipient — the exact camelCase
         # shape GetSaveAndRegister echoes back in its `boxes` array.  `si` is the
@@ -1203,6 +1251,18 @@ class HomescapesClient:
         return {"ok": False, "status": "error", "retried": retried,
                 "error": "retries exhausted (403)"}
 
+    def _card_cfg(self, serial: str, config: dict | None) -> dict:
+        """Config precedence exactly as cardsSend uses it: explicit param →
+        what cardsLoad stashed (host must match the load that minted the
+        token) → built-in defaults."""
+        creds = _CARD_CREDS.get(serial)
+        if config:
+            return _card_config(config)
+        if creds and creds.get("host"):
+            return {"host": creds["host"], "colId": creds["colId"],
+                    "colEt": creds["colEt"]}
+        return _card_config(None)
+
     def cardsSendAll(self, serial: str, card_ids: list[str], friend_ids: list[str],
                      config: dict | None = None) -> dict:
         """Send every card in card_ids to every friend in friend_ids via SendBox.
@@ -1219,6 +1279,16 @@ class HomescapesClient:
         cards = [c for c in (card_ids or []) if re.fullmatch(r"card_\d{2,3}", str(c))]
         if not cards:
             return {"ok": False, "status": "error", "error": "no valid card ids to send"}
+        # Open the account ONCE up front. Registering lazily inside cardsSend
+        # meant a broken device (no root / no GMS / Playrix knows no save)
+        # re-ran a full adb + GetSaveAndRegister round-trip for every one of
+        # the N*M pairs — 450 identical failures, minutes of dead time, and a
+        # reply no human can read. One preflight = one clear reason.
+        if serial not in _CARD_CREDS:
+            try:
+                self._ensure_creds(serial, config)
+            except ClientError as exc:
+                return {"ok": False, "status": "error", "error": str(exc)}
         for card_id in cards:
             for friend_id in friend_ids:
                 res = self.cardsSend(serial, friend_id, card_id, config)
@@ -1227,6 +1297,29 @@ class HomescapesClient:
                     sent += 1
                 else:
                     failed.append({"card_id": card_id, "to": friend_id, "res": res})
+                    # A credential-level failure (token rejected, cadence
+                    # block) is identical for every remaining pair — stop
+                    # instead of repeating it N*M more times.
+                    err = str((res.get("error") or "")).lower()
+                    if res.get("http") in (401, 403) or "token rejected" in err \
+                            or "temporarily blocked" in err or "advertising id" in err:
+                        for c2 in cards:
+                            for f2 in friend_ids:
+                                if c2 == card_id and f2 == friend_id:
+                                    continue
+                                if any(r["card_id"] == c2 and r["to"] == f2
+                                       for r in results):
+                                    continue
+                                results.append({"card_id": c2, "to": f2,
+                                                "res": {"ok": False, "status": "skipped",
+                                                        "error": f"aborted: {res.get('error')}"}})
+                                failed.append({"card_id": c2, "to": f2,
+                                               "res": {"ok": False, "status": "skipped",
+                                                       "error": f"aborted: {res.get('error')}"}})
+                        break
+            else:
+                continue
+            break
         return {
             "ok": len(failed) == 0,
             "status": "sent" if not failed else "partial",
