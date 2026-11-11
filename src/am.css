@@ -1132,6 +1132,18 @@
   background: #f7fafd;
 }
 
+/* Name-style tiles: the art is a wide lettering sample (the client ships it
+   around 3.4:1), so the box is landscape to match — the sample then fills the
+   tile at full size instead of being letterboxed into a thin strip. Sized to
+   stay aligned with the Equip column and to keep the row comfortable to scan. */
+.am-cos-tile--wide {
+  width: 168px;
+  height: 52px;
+  flex: 0 0 168px;
+  padding: 4px 6px;
+  box-sizing: border-box;
+}
+
 /* Solid colour tile — for the basic frames whose identity literally IS their
    colour (blue / orange / red / gold). This is the item's real appearance,
    not stand-in art. */

@@ -245,15 +245,19 @@ export function CosmeticsKindSection({ kind }: { kind: string }) {
               const staged = grantStaged.includes(it.id);
               const owned = ownedIds.has(it.id);
               const equipped = effEquipped === it.id;
+              // Name-style art is a wide lettering sample (~3.4:1). In a square
+              // tile it shrinks to a sliver, so styles get a landscape box that
+              // matches the art's own ratio and shows the sample at full size.
+              const tileCls = kind === "styles" ? " am-cos-tile--wide" : "";
               return (
                 <div className="am-checkrow am-checkrow--cos" key={it.id}>
                   {it.icon ? (
-                    <img className="am-cos-tile" src={it.icon} alt="" />
+                    <img className={`am-cos-tile${tileCls}`} src={it.icon} alt="" />
                   ) : it.swatch ? (
                     // The basic frames are named for the colour they render, so
                     // showing that colour is the item itself, not stand-in art.
                     <div
-                      className="am-cos-tile am-cos-tile--swatch"
+                      className={`am-cos-tile am-cos-tile--swatch${tileCls}`}
                       style={{ background: it.swatch }}
                       aria-hidden="true"
                     />
@@ -263,7 +267,7 @@ export function CosmeticsKindSection({ kind }: { kind: string }) {
                     // "Aa" for name styles — so the row reads as intentional,
                     // never as a broken image.
                     <div
-                      className="am-cos-tile am-cos-tile--noart"
+                      className={`am-cos-tile am-cos-tile--noart${tileCls}`}
                       title="No client art shipped for this id — preview only"
                       aria-hidden="true"
                     >
