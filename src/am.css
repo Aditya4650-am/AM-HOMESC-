@@ -1033,64 +1033,99 @@
 .am-ghost {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
   height: 36px;
   padding: 0 15px;
   border: 1.5px solid #dce7f6;
   border-radius: 10px;
-  background: #fbfcfe;
+  background: linear-gradient(180deg, #ffffff, #f7fafe);
   color: #35507e;
   font-family: inherit;
   font-size: 13.5px;
   font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  box-shadow: 0 1px 2px rgb(15 35 75 / 6%);
+  transition: border-color 0.12s ease, background 0.12s ease,
+    box-shadow 0.12s ease, transform 0.06s ease;
 }
 
 .am-ghost:hover {
   border-color: #b9cdf3;
-  background: #f4f9fe;
+  background: linear-gradient(180deg, #ffffff, #f1f7ff);
+  box-shadow: 0 2px 5px rgb(15 35 75 / 9%);
+}
+
+.am-ghost:active {
+  transform: translateY(1px);
+  box-shadow: none;
+}
+
+.am-ghost:focus-visible {
+  outline: 2px solid rgb(8 98 250 / 45%);
+  outline-offset: 2px;
 }
 
 .am-ghost:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Any icon inside a ghost button: fixed box so glyphs never stretch or clip. */
+.am-ghost svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
 }
 
 .am-ghost--primary {
-  background: #0862fa;
+  background: linear-gradient(180deg, #1a74ff, #0862fa);
   border-color: #0862fa;
   color: #ffffff;
+  box-shadow: 0 2px 6px rgb(8 98 250 / 25%);
 }
 
 .am-ghost--primary:hover {
-  background: #0756da;
+  background: linear-gradient(180deg, #0f6bf5, #0756da);
   border-color: #0756da;
+  box-shadow: 0 3px 8px rgb(8 98 250 / 30%);
 }
 
 /* Equip button on cosmetics rows — one fixed width keeps rows aligned. */
 .am-equip {
-  min-width: 88px;
+  min-width: 96px;
   justify-content: center;
+  gap: 6px;
 }
 
 /* Cosmetics rows: the item's own art leads the row, the same way the booster
-   rows on the Stats tab do. Icon-less ids (older event items the supplied
-   pack ships no art for) keep an empty tile so every row stays aligned. */
+   rows on the Stats tab do. Hover gives the row a light lift so scanning a
+   long list keeps the eye on the line it is on. */
 .am-checkrow--cos {
   gap: 12px;
   justify-content: flex-start;
-  padding: 10px 0;
+  padding: 9px 10px;
+  margin: 0 -10px;
+  border-radius: 12px;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+
+.am-checkrow--cos:hover {
+  background: #f4f9ff;
+  box-shadow: inset 0 0 0 1px #e9f2fe;
 }
 
 .am-cos-tile {
   width: 46px;
   height: 46px;
   flex: 0 0 46px;
-  object-fit: cover;
-  border-radius: 10px;
-  background: #f2f6fd;
-  border: 1px solid #e2e8f0;
+  /* contain, never cover: the game's own art must show whole, uncropped. */
+  object-fit: contain;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff, #f4f8fe);
+  border: 1px solid #e3ebf8;
+  box-shadow: 0 1px 2px rgb(15 35 75 / 5%);
 }
 
 .am-cos-tile--empty {
@@ -1104,18 +1139,43 @@
   border-color: rgb(0 0 0 / 12%);
 }
 
-/* Placeholder for ids the client pack ships no art for. The dashed border and
-   muted monogram make it unmistakably a placeholder, so it is never mistaken
-   for the game's own icon. */
+/* Placeholder for ids the client pack ships no art for. Instead of a broken
+   dashed box, it renders a deliberately designed preview: a ring tile for
+   frames (what a frame IS), a serif "Aa" for name styles (what a style IS).
+   It is visibly a preview, never mistaken for the game's own icon. */
 .am-cos-tile--noart {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f7fafd;
-  border: 1px dashed #c2d0e2;
-  color: #94a5bb;
-  font-size: 13px;
-  font-weight: 600;
+  background: radial-gradient(circle at 50% 38%, #ffffff, #eff5fd);
+  border: 1px solid #dce7f7;
+  color: #93a7c8;
+  overflow: hidden;
+}
+
+.am-cos-ring {
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid #d3e1f6;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  color: #8ba1c5;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.am-cos-aa {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 20px;
+  font-weight: 700;
+  color: #9db3d6;
   line-height: 1;
 }
 

@@ -3,13 +3,16 @@ import { api, ApiError, type LicenseSnap } from "../lib/api.ts";
 import { clearToken, getDeviceId, getToken, setToken } from "../lib/auth-store.ts";
 import { useToast } from "../components/ui.tsx";
 import { Icon, MiniSpinner } from "../components/icons.tsx";
-import { OwnerConsole } from "../components/OwnerConsole.tsx";
 
 /**
  * The gate — a faithful recreation of the IGG VIP Studio login scene.
  *
  * Left: brand lockup, tagline and the three things the tool actually does.
- * Right: the auth card — device id, licence field, unlock, owner console.
+ * Right: the auth card — device id, licence field, unlock.
+ *
+ * The owner console used to be reachable from here as well; the owner asked
+ * for a clean login with nothing but the key field, so it now lives only in
+ * the studio's Owner tab (once unlocked).
  *
  * A stored activation token is re-validated against the server on load, so a
  * client who reloads lands straight in the studio while a revoked key does not.
@@ -33,7 +36,6 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
-  const [ownerOpen, setOwnerOpen] = useState(false);
   const [deviceId, setDeviceId] = useState("");
 
   useEffect(() => {
@@ -248,8 +250,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
               </button>
             </div>
             <p className="login-hint">
-              Keys are case-insensitive and the separators are optional. The <b>owner passcode</b> also works
-              here — it opens the full studio plus the owner console.
+              Keys are case-insensitive and the separators are optional.
             </p>
 
             {error ? (
@@ -262,11 +263,6 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
             <button type="button" className="login-unlock" onClick={() => void activate()} disabled={busy}>
               {busy ? <MiniSpinner /> : <Icon name="unlock" />}
               {busy ? "Unlocking…" : "Unlock studio"}
-            </button>
-
-            <button type="button" className="login-unlock login-unlock--ghost" onClick={() => setOwnerOpen(true)}>
-              <Icon name="server" />
-              Owner console · issue client keys
             </button>
 
             {storage === "file" ? (
@@ -289,17 +285,6 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
         </span>
         <span className="login-footer-rule" aria-hidden />
       </footer>
-
-      {ownerOpen ? (
-        <div
-          className="login-owner-backdrop"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setOwnerOpen(false);
-          }}
-        >
-          <OwnerConsole onClose={() => setOwnerOpen(false)} />
-        </div>
-      ) : null}
     </div>
   );
 }

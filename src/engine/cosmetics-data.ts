@@ -30,33 +30,33 @@ export interface CosmeticItem {
 }
 
 export const FRAME_ITEMS: readonly CosmeticItem[] = [
-  { id: "default", label: "Default", mono: "—" },
-  // The basic frames are named after the colour they render, so painting that
-  // colour is a faithful representation of the item — not invented art.
-  { id: "blue", label: "Blue", swatch: "#4a90d9" },
-  { id: "orange", label: "Orange", swatch: "#e08a2e" },
-  { id: "red", label: "Red", swatch: "#cf4a44" },
-  { id: "gold", label: "Gold", swatch: "#c8a02e" },
+  { id: "default", label: "Default", icon: "assets/cosmetics/frames/default.webp" },
+  // The basic frames are named after the colour they render; the pack ships
+  // their real client art, which is strictly better than painting a swatch.
+  { id: "blue", label: "Blue", icon: "assets/cosmetics/frames/blue.webp" },
+  { id: "orange", label: "Orange", icon: "assets/cosmetics/frames/orange.webp" },
+  { id: "red", label: "Red", icon: "assets/cosmetics/frames/red.webp" },
+  { id: "gold", label: "Gold", icon: "assets/cosmetics/frames/gold.webp" },
   { id: "dragon_nest_frame_1", label: "Dragon Nest I", icon: "assets/cosmetics/frames/dragon_nest_frame_1.webp" },
   { id: "dragon_nest_frame_2", label: "Dragon Nest II", icon: "assets/cosmetics/frames/dragon_nest_frame_2.webp" },
   { id: "dragon_nest_frame_duck", label: "Duckling", icon: "assets/cosmetics/frames/dragon_nest_frame_duck.webp" },
-  { id: "dragon_nest_frame_fire", label: "Fire", mono: "—" },
+  { id: "dragon_nest_frame_fire", label: "Fire", mono: "FIRE" },
   { id: "dragon_nest_frame_summer", label: "Summer", icon: "assets/cosmetics/frames/dragon_nest_frame_summer.webp" },
   { id: "dragon_nest_frame_magnet", label: "Magnet", icon: "assets/cosmetics/frames/dragon_nest_frame_magnet.webp" },
   { id: "dragon_nest_frame_lava", label: "Lava", icon: "assets/cosmetics/frames/dragon_nest_frame_lava.webp" },
-  { id: "dragon_nest_frame_donut", label: "Donut", mono: "—" },
-  { id: "dragon_nest_frame_train", label: "Train", mono: "—" },
+  { id: "dragon_nest_frame_donut", label: "Donut", icon: "assets/cosmetics/frames/dragon_nest_frame_donut.webp" },
+  { id: "dragon_nest_frame_train", label: "Train", icon: "assets/cosmetics/frames/dragon_nest_frame_train.webp" },
 ];
 
 export const STYLE_ITEMS: readonly CosmeticItem[] = [
-  { id: "default", label: "Default", mono: "—" },
+  { id: "default", label: "Default", icon: "assets/cosmetics/styles/default.webp" },
   { id: "four_elements_font_1", label: "Four Elements: Duck", icon: "assets/cosmetics/styles/four_elements_font_1.webp" },
   { id: "four_elements_font_2", label: "Four Elements: Summer", icon: "assets/cosmetics/styles/four_elements_font_2.webp" },
   { id: "four_elements_font_electric", label: "Four Elements: Electric", icon: "assets/cosmetics/styles/four_elements_font_electric.webp" },
   { id: "four_elements_font_fire", label: "Four Elements: Fire", icon: "assets/cosmetics/styles/four_elements_font_fire.webp" },
   { id: "four_elements_font_lava", label: "Four Elements: Lava", icon: "assets/cosmetics/styles/four_elements_font_lava.webp" },
-  { id: "four_elements_font_donut", label: "Four Elements: Donut", mono: "—" },
-  { id: "four_elements_font_train", label: "Four Elements: Train", mono: "—" },
+  { id: "four_elements_font_donut", label: "Four Elements: Donut", icon: "assets/cosmetics/styles/four_elements_font_donut.webp" },
+  { id: "four_elements_font_train", label: "Four Elements: Train", icon: "assets/cosmetics/styles/four_elements_font_train.webp" },
 ];
 
 export const BADGE_ITEMS: readonly CosmeticItem[] = [

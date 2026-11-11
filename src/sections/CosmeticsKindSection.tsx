@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AmActions } from "./AmActions.tsx";
 import { AmBar, AmCheck, AmEmpty, useToast } from "../components/ui.tsx";
+import { Icon } from "../components/icons.tsx";
 import { useStudio } from "../lib/studio.tsx";
 import {
   api,
@@ -257,15 +258,24 @@ export function CosmeticsKindSection({ kind }: { kind: string }) {
                       aria-hidden="true"
                     />
                   ) : (
-                    // No client art exists for this id. Dashed border + monogram
-                    // marks the tile as a placeholder so it is never mistaken
-                    // for the game's own icon.
+                    // No client art exists for this id. Render a designed
+                    // preview of what the item IS — a ring for frames, a serif
+                    // "Aa" for name styles — so the row reads as intentional,
+                    // never as a broken image.
                     <div
                       className="am-cos-tile am-cos-tile--noart"
-                      title="No client art shipped for this id"
+                      title="No client art shipped for this id — preview only"
                       aria-hidden="true"
                     >
-                      <span>{it.mono ?? "—"}</span>
+                      {kind === "frames" ? (
+                        <span className="am-cos-ring">{it.mono ?? ""}</span>
+                      ) : kind === "styles" ? (
+                        <span className="am-cos-aa">Aa</span>
+                      ) : (
+                        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.05em" }}>
+                          {it.mono ?? ""}
+                        </span>
+                      )}
                     </div>
                   )}
                   <div className="am-cos-body">
@@ -312,6 +322,7 @@ export function CosmeticsKindSection({ kind }: { kind: string }) {
                       stageEquip(it.id);
                     }}
                   >
+                    <Icon name={equipped ? "check" : "sparkles"} />
                     Equip
                   </button>
                 </div>
