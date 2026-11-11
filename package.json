@@ -12,7 +12,7 @@
     "server": "node --experimental-strip-types src/server/main.ts",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/engine/*.test.ts",
+    "test": "node --experimental-strip-types --test src/engine/*.test.ts src/server/*.test.ts",
     "season-ticket": "node --experimental-strip-types tools/edit_season_ticket.ts",
     "preview": "vite preview",
     "start": "node --experimental-strip-types src/server/main.ts",

@@ -26,6 +26,26 @@ jobs:
           npm test
           npm run build
 
+      - name: Stamp the client version from the release tag
+        # version() must report the release's real version: the UI compares it
+        # against the server's published version to decide whether to install,
+        # so a hardcoded source value would make every release look newer than
+        # the running EXE forever. A workflow_dispatch build has no version
+        # tag, so it keeps the source's own value.
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ($tag -match '^v\d+\.\d+\.\d+') {
+            $ver = $tag.TrimStart('v')
+            $path = 'client/hc_client.py'
+            $text = Get-Content $path -Raw
+            $text = $text -replace 'APP_VERSION = "[^"]*"', "APP_VERSION = `"$ver`""
+            Set-Content -Path $path -Value $text -NoNewline
+            Write-Host "client version stamped: $ver"
+          } else {
+            Write-Host "no version tag on this build - keeping source APP_VERSION"
+          }
+
       - name: Install dependencies
         run: python -m pip install --upgrade pip pyinstaller pywebview
 
@@ -48,58 +68,65 @@ jobs:
           & 'client/adb/adb.exe' version
           Get-ChildItem 'client/adb' | Select-Object Name,Length
 
-      - name: Build EXE (PyInstaller onedir)
+      - name: Build EXE (PyInstaller onefile)
         run: |
           cd client
           python -m PyInstaller --clean --noconfirm homescapes_client.spec
 
-      - name: Verify ADB actually shipped inside the build
+      - name: Verify ADB actually shipped inside the single-file build
+        # onefile has no folder to search — the archive itself is the build.
+        # `archive_viewer --list` prints what was packed, so Connect's adb can
+        # be proven present without launching the GUI.
         shell: pwsh
         run: |
-          $bundled = 'client/dist/Homescapes Save Studio/_internal/adb/adb.exe'
-          if (-not (Test-Path $bundled)) {
-            $hit = Get-ChildItem -Path 'client/dist/Homescapes Save Studio' -Recurse -Filter 'adb.exe' | Select-Object -First 1
-            if (-not $hit) { throw 'adb.exe is not in the packaged build - Connect would fail on a clean PC' }
-            $bundled = $hit.FullName
+          $exe = 'client/dist/Homescapes Save Studio.exe'
+          if (-not (Test-Path $exe)) { throw "expected $exe after the onefile build" }
+          $list = python -m PyInstaller.utils.cliutils.archive_viewer -l -b $exe
+          if ($LASTEXITCODE -ne 0) { throw 'archive_viewer failed' }
+          $hit = $list | Select-String -Pattern 'adb[/\\]adb\.exe'
+          if (-not $hit) {
+            Write-Host '--- archive listing (head) ---'
+            $list | Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+            throw 'adb.exe is not packed into the EXE - Connect would fail on a clean PC'
           }
-          Write-Host "bundled adb: $bundled"
-          & $bundled version
+          Write-Host "bundled adb: $hit"
 
       - name: Verify GUI subsystem
         shell: pwsh
         run: |
-          $pe = "client/dist/Homescapes Save Studio/Homescapes Save Studio.exe"
+          $pe = "client/dist/Homescapes Save Studio.exe"
           $bytes = [System.IO.File]::ReadAllBytes($pe)
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
           $subsystem = [BitConverter]::ToUInt16($bytes, $peOffset + 0x5C)
           Write-Host "PE subsystem: $subsystem"
           if ($subsystem -ne 2) { throw "Expected GUI (2), got $subsystem" }
 
-      - name: Zip release
+      - name: Stage the release asset (the single EXE + its checksum)
+        # The client deliverable IS this one file. The .sha256 travels beside
+        # it in the release so the auto-updater can verify bytes before it
+        # swaps a running EXE — clients never see either.
         shell: pwsh
         run: |
-          Compress-Archive -Path 'client/dist/Homescapes Save Studio' -DestinationPath 'client/dist/HOMESC.SAVE.STUDIO.zip' -Force
-
-      - name: Publish SHA-256 next to the asset
-        # `hc update` refuses to replace the running EXE without this file, so it
-        # has to be produced by the same job that builds the zip.
-        shell: pwsh
-        run: |
-          $hash = (Get-FileHash 'client/dist/HOMESC.SAVE.STUDIO.zip' -Algorithm SHA256).Hash.ToLower()
+          Copy-Item 'client/dist/Homescapes Save Studio.exe' 'client/dist/HOMESC.SAVE.STUDIO.exe' -Force
+          $hash = (Get-FileHash 'client/dist/HOMESC.SAVE.STUDIO.exe' -Algorithm SHA256).Hash.ToLower()
           Write-Host "sha256: $hash"
-          "$hash  HOMESC.SAVE.STUDIO.zip" | Out-File -Encoding ascii 'client/dist/HOMESC.SAVE.STUDIO.zip.sha256'
-          Get-Content 'client/dist/HOMESC.SAVE.STUDIO.zip.sha256'
+          $size = (Get-Item 'client/dist/HOMESC.SAVE.STUDIO.exe').Length
+          Write-Host "bytes: $size"
+          "$hash  HOMESC.SAVE.STUDIO.exe" | Out-File -Encoding ascii 'client/dist/HOMESC.SAVE.STUDIO.exe.sha256'
+          Get-Content 'client/dist/HOMESC.SAVE.STUDIO.exe.sha256'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: homescapes-client
-          path: client/dist/HOMESC.SAVE.STUDIO.zip
+          path: |
+            client/dist/HOMESC.SAVE.STUDIO.exe
+            client/dist/HOMESC.SAVE.STUDIO.exe.sha256
 
       - name: Attach to GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            client/dist/HOMESC.SAVE.STUDIO.zip
-            client/dist/HOMESC.SAVE.STUDIO.zip.sha256
+            client/dist/HOMESC.SAVE.STUDIO.exe
+            client/dist/HOMESC.SAVE.STUDIO.exe.sha256

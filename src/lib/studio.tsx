@@ -228,7 +228,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
    *
    * The EXE is a thin shell that loads the UI from this server, so a UI deploy
    * reaches every installed copy with no rebuild. Only a change to the EXE
-   * binary ships a release zip, which the server publishes. When that version
+   * binary ships a release, which the server publishes. When that version
    * is newer than the running EXE's, hand the release to the native installer
    * (download + SHA-256 verify + atomic swap + relaunch). Runs once on mount
    * and every 15 minutes; a missed poll never breaks the studio. No-op in a

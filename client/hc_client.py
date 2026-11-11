@@ -834,19 +834,20 @@ class HomescapesClient:
     # ── auto-update ──────────────────────────────────────────────────────────
     # The EXE is a thin shell: it loads the UI from the server, so a UI deploy
     # reaches every installed copy with no rebuild. Only a change to the BINARY
-    # ships a release zip; the web app polls the server for it and calls
+    # ships a release EXE; the web app polls the server for it and calls
     # installUpdate. version() lets the web app decide whether it is newer.
 
     def version(self) -> str:
         return APP_VERSION
 
     def installUpdate(self, release: dict) -> dict:
-        """Download a verified release zip and swap this EXE in place.
+        """Download a verified release and swap this EXE in place.
 
         The download's SHA-256 must match the published one or nothing is
-        written. A foldered (onedir) release swaps the whole install folder; a
-        single-file release swaps just the EXE. Either way a tiny .cmd does the
-        swap after this process exits, then relaunches.
+        written. The current release is the single-file EXE and swaps itself
+        in place; a legacy foldered (onedir) zip still swaps its whole install
+        folder. Either way a tiny .cmd does the swap after this process exits,
+        then relaunches.
         """
         try:
             url = str(release["downloadUrl"])
@@ -1490,16 +1491,16 @@ def _release_sha256(repo: str, tag: str, asset: str) -> str:
 
 
 def _cmd_update() -> int:
-    """Self-update from a release zip (manual CLI fallback).
+    """Self-update from a published release asset (manual CLI fallback).
 
     The shipped EXE normally updates itself: the web app polls the server for
     a published release and calls `installUpdate`. This verb only exists so an
     operator can force it by hand.
 
     Env:
-      HC_UPDATE_URL    - direct URL of the release zip (preferred)
+      HC_UPDATE_URL    - direct URL of the release EXE (preferred)
       HC_UPDATE_REPO   - owner/repo to pull from (default this project)
-      HC_UPDATE_ASSET  - release asset name (default the Homescapes client zip)
+      HC_UPDATE_ASSET  - release asset name (default the single-file client EXE)
       HC_UPDATE_TAG    - pin a tag (skips the latest-release lookup)
       HC_UPDATE_SHA256 - expected SHA-256 of the asset; mismatch refuses to swap
 
@@ -1514,7 +1515,7 @@ def _cmd_update() -> int:
         url = direct
         tag = os.environ.get("HC_UPDATE_TAG") or "manual"
     else:
-        asset = os.environ.get("HC_UPDATE_ASSET") or "HOMESC.SAVE.STUDIO.zip"
+        asset = os.environ.get("HC_UPDATE_ASSET") or "HOMESC.SAVE.STUDIO.exe"
         tag = os.environ.get("HC_UPDATE_TAG") or _latest_release_tag(repo)
         url = f"https://github.com/{repo}/releases/download/{tag}/{asset}"
     dest = Path(tempfile.gettempdir()) / f"hc_update_{tag}.zip"
@@ -1558,7 +1559,9 @@ def _cmd_update() -> int:
     os._exit(0)
 
 
-# The auto-updater's on-disk swap. The EXE ships onedir (a folder), so a new
+# The auto-updater's on-disk swap. The client ships as ONE file, but installs
+# built before the onefile switch still hold a foldered (onedir) tree and can
+# receive a legacy zip release — so both swap paths stay.
 # release is swapped by a tiny .cmd that waits for the running EXE to exit,
 # copies the staged tree over the install folder, relaunches, and deletes
 # itself. Nothing here decides WHAT to download — that comes from the server's
@@ -1612,6 +1615,47 @@ def _swap_single_exe_bat(new_exe: str, dest: str) -> str:
 
 
 # --------------------------------------------------------------------- proxy --
+_MIME_BY_EXT = {
+    ".html": "text/html; charset=utf-8",
+    ".htm": "text/html; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".txt": "text/plain; charset=utf-8",
+}
+
+
+def _content_type_for(path: str) -> str:
+    """MIME fallback for an upstream response that carries no Content-Type.
+
+    Extension-less paths are SPA routes the studio serves as index.html, so
+    they get the HTML type — otherwise a router URL would fall back to JSON
+    and render as source again. API paths fall back to JSON for the same
+    reason.
+    """
+    clean = path.split("?", 1)[0].split("#", 1)[0].lower()
+    dot = clean.rfind(".")
+    if dot != -1:
+        ext = _MIME_BY_EXT.get(clean[dot:])
+        if ext:
+            return ext
+    if clean.startswith("/api/"):
+        return "application/json"
+    return "text/html; charset=utf-8"
+
+
 def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[BaseHTTPRequestHandler]:
     """Reverse proxy for the desktop shell.
 
@@ -1653,7 +1697,13 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                 if lk in ("content-type", "x-hs-token", "authorization", "x-device-id", "accept", "user-agent"):
                     req.add_header(key, value)
             with _urlrequest.urlopen(req, timeout=300) as resp:
-                return resp.status, resp.read()
+                # The RESPONSE headers must come back too. The browser refuses
+                # a module script or stylesheet served with the wrong MIME
+                # type, so the proxy has to repeat what the studio actually
+                # said about the body — never infer it from the request (a GET
+                # carries no content-type at all, which made every page come
+                # back as application/json and render as raw source).
+                return resp.status, dict(resp.headers.items()), resp.read()
 
         # -- dispatch
         def _dispatch(self) -> None:
@@ -1695,7 +1745,7 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                     self._respond_json(400, {"ok": False, "error": "`serial` is required"})
                     return
                 sid = str(payload.get("sessionId") or "")
-                status, data = self._upstream(
+                status, _headers, data = self._upstream(
                     "GET", f"/api/export?sessionId={_urlparse.quote(sid)}", None, token
                 )
                 if status != 200:
@@ -1744,11 +1794,19 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                 self._respond_json(200, {"ok": True, **reply})
                 return
 
-            status, data = self._upstream(self.command, self.path, self._body() or None, token)
+            status, upstream_headers, data = self._upstream(self.command, self.path, self._body() or None, token)
             self.send_response(status)
-            ct = self.headers.get("content-type") or "application/json"
-            if "json" in ct:
-                ct = "application/json"
+            # Repeat the studio's own Content-Type. This header decides whether
+            # the window renders the page or dumps it as raw source — and
+            # whether the module script/CSS are allowed to execute at all
+            # (the browser blocks them on a MIME mismatch).
+            ct = ""
+            for key, value in upstream_headers.items():
+                if key.lower() == "content-type":
+                    ct = value.strip()
+                    break
+            if not ct:
+                ct = _content_type_for(self.path)
             self.send_header("content-type", ct)
             self.send_header("content-length", str(len(data)))
             self.end_headers()

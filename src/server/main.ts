@@ -63,6 +63,7 @@ import {
   type SaveSession,
 } from "./session.ts";
 import * as limiter from "./ratelimit.ts";
+import { fetchLatestRelease } from "./release.ts";
 import {
   CONTENT_ROOTS,
   assertContentRoots,
@@ -114,10 +115,13 @@ const APP_VERSION = process.env.CLIENT_VERSION?.trim() || "0.2.0";
  *
  * The EXE is a thin shell that loads the UI from THIS server, so a UI deploy
  * reaches every installed copy with no rebuild. Only a change to the EXE
- * binary ships a release zip; the web app polls `/api/update` for this record
- * and calls the native installer when the server's version is newer. Seeded
- * from env so a deploy can publish without a code change; the Owner Hub can
- * also publish at runtime.
+ * binary ships a release; the web app polls `/api/update` for this record
+ * and calls the native installer when the server's version is newer.
+ *
+ * The default source is the GitHub release channel itself (see release.ts):
+ * tagging a `v*` release is the whole procedure — nothing is pasted into
+ * Render after a build. `CLIENT_UPDATE_*` env vars remain as the offline
+ * fallback, and the Owner Hub's "Publish update" overrides both at runtime.
  */
 interface ClientRelease {
   version: string;
@@ -137,7 +141,8 @@ function envRelease(): ClientRelease {
   };
 }
 
-let clientRelease: ClientRelease = envRelease();
+/** Set by Owner Hub → Publish update; wins over every other source until restart. */
+let runtimeRelease: ClientRelease | null = null;
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -418,7 +423,7 @@ interface OwnerBody {
   note?: string;
   key?: string;
   bindDevice?: string;
-  /** publish-update: the release zip the EXE downloads. */
+  /** publish-update: the release the EXE downloads. */
   downloadUrl?: string;
   sha256?: string;
   notes?: string;
@@ -445,7 +450,13 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
   // and any pre-auth state can read it; it only ever reveals a version and a
   // public download URL — never anything secret.
   if (route === "GET /api/update") {
-    sendJson(res, 200, { ok: true, release: clientRelease });
+    // Precedence: an explicit Owner Hub publish wins until the next restart;
+    // otherwise the GitHub release channel resolves itself (tagging a `v*`
+    // release is the whole procedure — nothing gets pasted into Render);
+    // the CLIENT_UPDATE_* env vars are the offline fallback when GitHub
+    // cannot be reached.
+    const release = runtimeRelease ?? (await fetchLatestRelease()) ?? envRelease();
+    sendJson(res, 200, { ok: true, release });
     return;
   }
 
@@ -585,8 +596,8 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       if (!/^[0-9a-f]{64}$/.test(sha256)) {
         throw new SessionError("sha256 must be 64 hex characters", 400);
       }
-      clientRelease = { version, downloadUrl, sha256, notes, publishedAt: Date.now() };
-      sendJson(res, 200, { ok: true, release: clientRelease });
+      runtimeRelease = { version, downloadUrl, sha256, notes, publishedAt: Date.now() };
+      sendJson(res, 200, { ok: true, release: runtimeRelease });
       return;
     }
     throw new SessionError(

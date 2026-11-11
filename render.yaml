@@ -26,10 +26,13 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      # Desktop EXE self-update (optional). The EXE loads the UI from this
-      # service, so a UI deploy needs no rebuild — these only matter when the
-      # EXE *binary* changes. Paste the release zip URL + its SHA-256 (or issue
-      # them through the Owner Hub -> Publish update).
+      # Desktop EXE self-update. OPTIONAL — the server resolves the release
+      # channel itself from GitHub (build-client.yml attaches the zip + its
+      # .sha256 to every v* tag), so leaving these empty is the normal,
+      # zero-maintenance setup: tag a release and installed EXEs update on
+      # their next poll. Only set them to pin/offline-fallback a specific
+      # build when GitHub is unreachable; Owner Hub -> Publish update
+      # overrides both at runtime.
       - key: CLIENT_VERSION
         sync: false
       - key: CLIENT_UPDATE_URL

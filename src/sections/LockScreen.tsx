@@ -281,7 +281,7 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
       <footer className="login-footer">
         <span className="login-footer-rule" aria-hidden />
         <span className="login-footer-credit">
-          Built by <span className="login-brand-wordmark">AM TECH</span>
+          Built by <span className="login-brand-wordmark">ZENITSU491</span>
         </span>
         <span className="login-footer-rule" aria-hidden />
       </footer>
