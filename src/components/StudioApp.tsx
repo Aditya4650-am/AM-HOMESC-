@@ -221,31 +221,6 @@ function Shell({ owner }: { owner: boolean }) {
             <div className="am-tb-sub">Game Data Center</div>
           </div>
 
-          <div className="am-winctl" role="group" aria-label="Window controls">
-            <img src="assets/ui/winctl.png" alt="" />
-            <button
-              type="button"
-              className="am-winctl-btn am-winctl-btn--min"
-              title="Minimize"
-              aria-label="Minimize"
-              onClick={() => setWin("min")}
-            />
-            <button
-              type="button"
-              className="am-winctl-btn am-winctl-btn--max"
-              title={win === "max" ? "Restore" : "Maximize"}
-              aria-label="Toggle maximize"
-              onClick={() => setWin(win === "max" ? "windowed" : "max")}
-            />
-            <button
-              type="button"
-              className="am-winctl-btn am-winctl-btn--close"
-              title="Close"
-              aria-label="Close"
-              onClick={() => setWin("closed")}
-            />
-          </div>
-
           <div className="am-tb-right am-tb-right--tools">
             <select
               className="am-select am-select--device"
