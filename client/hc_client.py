@@ -11,6 +11,8 @@ Two roles, one file:
         python client/hc_client.py force-stop --serial <s>
         python client/hc_client.py start  --serial <s>
         python client/hc_client.py restore-backup --serial <s>
+        python client/hc_client.py fresh-start-new-account --serial <s>
+        python client/hc_client.py fresh-start-restore-account --serial <s>
       Every command prints exactly one JSON object on stdout.
 
   * Desktop shell — `python client/hc_client.py` with no arguments opens a
@@ -174,6 +176,17 @@ SAVE_FILE = "SaveGame.db"
 BACKUP_FILE = "SaveGame.db.bak"      # written by the GAME itself
 TOOL_BACKUP_SUFFIX = ".hcsbak"       # our own pre-edit snapshot; the game never reads it
 
+# Fresh Start touches EXACTLY these three files — the save, the backup the
+# game itself writes and the buffer it writes before committing. The list is
+# a fixed tuple, never a glob or a wildcard: `rm -f` on this device is only
+# ever handed these three literal paths, so nothing else in the package's
+# private storage can be caught up in it.
+FRESH_FILES = (SAVE_FILE, SAVE_FILE + ".bak", SAVE_FILE + ".buf")
+# Backup records kept on this PC: fresh-start-<epoch-ms>-<32 hex>.json
+FRESH_BACKUP_RE = re.compile(r"^fresh-start-(\d+)-[0-9a-f]{32}\.json$")
+FRESH_BACKUP_LIMIT = 96 * 1024 * 1024
+FRESH_MAX_BYTES = 64 * 1024 * 1024
+
 # Fallbacks only — the real path is discovered on the device (see _find_on_device).
 _SAVE_SUBDIRS = ("", "files", "saves", "app_data")
 _SAVE_BASES = (
@@ -195,6 +208,58 @@ def candidate_paths_for_package(pkg: str, filename: str) -> list[str]:
             if path not in out:
                 out.append(path)
     return out
+
+
+def fresh_backup_dir() -> Path:
+    """Where this PC keeps the pre-fresh-start copies of a device's save."""
+    return _app_data_dir() / "backups"
+
+
+def write_fresh_backup(snapshot: dict) -> Path:
+    """Persist a snapshot on THIS PC so a fresh start is always reversible.
+
+    Written to a temp name and renamed into place: a crash mid-write can only
+    ever leave a `.tmp` behind, never a half-filled record that a later
+    restore would read as a good backup.
+    """
+    directory = fresh_backup_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"fresh-start-{int(time.time() * 1000)}-{os.urandom(16).hex()}.json"
+    tmp = directory / f".pending-{os.urandom(8).hex()}.tmp"
+    try:
+        with open(tmp, "x", encoding="utf-8", newline="") as fh:
+            fh.write(json.dumps(snapshot))
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(target)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return target
+
+
+def latest_fresh_backup(serial: str) -> Path | None:
+    """Newest backup record on this PC that belongs to `serial`.
+
+    Filenames carry an epoch-ms prefix, so sorting the names newest-first
+    walks the records in the order they were taken. A record for a different
+    device is skipped rather than returned — a client's PC may hold several.
+    """
+    directory = fresh_backup_dir()
+    try:
+        names = [n for n in os.listdir(directory) if FRESH_BACKUP_RE.match(n)]
+    except OSError:
+        return None
+    for name in sorted(names, reverse=True):
+        try:
+            record = json.loads((directory / name).read_text(encoding="utf-8"))
+        except Exception:
+            continue  # a truncated record is simply not a candidate
+        if isinstance(record, dict) and record.get("serial") == serial:
+            return directory / name
+    return None
 
 
 # Real device paths discovered per (serial, package, filename), so a later
@@ -1587,6 +1652,216 @@ class HomescapesClient:
             raise ClientError(f"restore failed: {combined or 'su cp failed'}")
         raise ClientError("no tool backup found on this device yet")
 
+    # ── fresh start ─────────────────────────────────────────────────────────
+    # A fresh start is a FILE operation, not a save edit: the account becomes
+    # new because the three files the game keeps are removed and the game is
+    # restarted with none of them. Every one of them is copied to this PC
+    # first, so "Create new account" is always reversible with "Restore
+    # previous account" — the backup is written and fsync'ed BEFORE any rm.
+
+    @staticmethod
+    def _validate_fresh_snapshot(snapshot) -> tuple[str, str, dict[str, bytes | None]]:
+        """Check a backup record. Runs before ANY command reaches the device."""
+        if not isinstance(snapshot, dict):
+            raise ClientError("invalid backup")
+        pkg = snapshot.get("package")
+        path = snapshot.get("file")
+        files = snapshot.get("files")
+        if pkg not in GAME_PACKAGES or not isinstance(path, str):
+            raise ClientError("invalid backup source")
+        roots = [base.format(pkg=pkg).rstrip("/") + "/" for base in _SAVE_BASES]
+        if (
+            not path.endswith("/" + SAVE_FILE)
+            or not any(path.startswith(root) for root in roots)
+            or ".." in path.split("/")
+            or any(c in path for c in ("\x00", "\r", "\n", "'", '"', "$", "`", "\\"))
+        ):
+            raise ClientError("invalid backup path")
+        if not isinstance(files, dict) or set(files) != set(FRESH_FILES):
+            raise ClientError("incomplete backup")
+        decoded: dict[str, bytes | None] = {}
+        total = 0
+        for name in FRESH_FILES:
+            value = files[name]
+            if value is None:
+                decoded[name] = None
+            elif isinstance(value, str):
+                try:
+                    decoded[name] = base64.b64decode(value, validate=True)
+                except Exception as error:
+                    raise ClientError("invalid backup data") from error
+                total += len(decoded[name])
+            else:
+                raise ClientError("invalid backup data")
+        if decoded[SAVE_FILE] is None or total > FRESH_MAX_BYTES:
+            raise ClientError("invalid backup size")
+        return pkg, path, decoded
+
+    def _fresh_stop(self, serial: str, pkg: str) -> None:
+        """Stop THIS package and only this one — the save must not be written back."""
+        _ACTIVE_PACKAGE[serial] = pkg
+        stopped = self.force_stop(serial)
+        if not stopped.get("ok") or stopped.get("package") != pkg:
+            raise ClientError("could not stop the selected game")
+        time.sleep(0.4)
+
+    def _fresh_read_files(self, adb: str, serial: str, path: str) -> dict[str, str | None]:
+        """base64 of each of the three files; `None` where the file is absent."""
+        parent = path.rsplit("/", 1)[0]
+        files: dict[str, str | None] = {}
+        for name in FRESH_FILES:
+            remote = f"{parent}/{name}"
+            shell = f"su -c 'if [ -e \"{remote}\" ]; then echo PRESENT; else echo ABSENT; fi'"
+            code, out, _ = _run_adb(adb, ["-s", serial, "shell", shell], timeout=15)
+            if code != 0 or out.strip() not in (b"PRESENT", b"ABSENT"):
+                raise ClientError("could not inspect the save files")
+            if out.strip() == b"ABSENT":
+                files[name] = None
+                continue
+            content = _pull_privileged(adb, serial, remote)
+            if content is None:
+                raise ClientError("could not back up the save files")
+            files[name] = base64.b64encode(content).decode("ascii")
+        return files
+
+    def _fresh_restore_files(
+        self, adb: str, serial: str, pkg: str, path: str, files: dict[str, bytes | None]
+    ) -> None:
+        """Put every file back with the directory's own owner and mode."""
+        parent = path.rsplit("/", 1)[0]
+        code, out, _ = _run_adb(
+            adb, ["-s", serial, "shell", f"su -c 'stat -c %u:%g \"{parent}\"'"], timeout=15
+        )
+        owner = out.decode("ascii", "ignore").strip()
+        if code != 0 or not re.fullmatch(r"\d+:\d+", owner):
+            raise ClientError("could not determine save ownership")
+        with tempfile.TemporaryDirectory() as td:
+            for index, (name, content) in enumerate(files.items()):
+                remote = f"{parent}/{name}"
+                if content is None:
+                    shell = f"su -c 'rm -f \"{remote}\"'"
+                else:
+                    local = Path(td) / name
+                    local.write_bytes(content)
+                    transfer = f"/data/local/tmp/hcs_restore_{index}.bin"
+                    code, _, _ = _run_adb(
+                        adb, ["-s", serial, "push", str(local), transfer], timeout=60
+                    )
+                    if code != 0:
+                        raise ClientError("backup upload failed")
+                    shell = (
+                        f"su -c 'cp \"{transfer}\" \"{remote}\" && chown {owner} \"{remote}\""
+                        f" && chmod 600 \"{remote}\"'"
+                    )
+                code, out, err = _run_adb(adb, ["-s", serial, "shell", shell], timeout=30)
+                if code != 0 or re.search(rb"permission denied|failed|error:", out + err, re.I):
+                    raise ClientError("backup restore failed")
+
+    def fresh_snapshot(self, serial: str, pkg: str, path: str) -> dict:
+        """Copy the three save files off the device into a backup record."""
+        adb = _find_adb()
+        if not adb or pkg not in GAME_PACKAGES or not _is_pkg_installed(adb, serial, pkg):
+            raise ClientError("selected game unavailable")
+        # Validate the pinned source before constructing any shell command.
+        placeholder = {SAVE_FILE: "", SAVE_FILE + ".bak": None, SAVE_FILE + ".buf": None}
+        self._validate_fresh_snapshot({"package": pkg, "file": path, "files": placeholder})
+        self._fresh_stop(serial, pkg)
+        found = self._read_save(adb, serial, pkg)
+        if not found or found[0] != path:
+            raise ClientError("save source changed; connect again")
+        files = self._fresh_read_files(adb, serial, path)
+        snapshot = {
+            "ok": True,
+            "schema": 1,
+            "serial": serial,
+            "package": pkg,
+            "file": path,
+            "files": files,
+        }
+        self._validate_fresh_snapshot(snapshot)
+        return snapshot
+
+    def fresh_start(self, serial: str, snapshot: dict, restore: bool = False) -> dict:
+        """Delete the three save files (or put a backup of them back)."""
+        pkg, path, files = self._validate_fresh_snapshot(snapshot)
+        if snapshot.get("serial") != serial:
+            raise ClientError("backup belongs to another device")
+        adb = _find_adb()
+        if not adb or not _is_pkg_installed(adb, serial, pkg):
+            raise ClientError("selected game unavailable")
+        self._fresh_stop(serial, pkg)
+        if restore:
+            self._fresh_restore_files(adb, serial, pkg, path, files)
+        else:
+            # Refuse to delete anything if the save moved under us between the
+            # backup and the rm — that is the window where a restore would
+            # otherwise hand back someone else's files.
+            current = self._fresh_read_files(adb, serial, path)
+            if current != snapshot["files"]:
+                raise ClientError("save files changed after the backup; connect again")
+            parent = path.rsplit("/", 1)[0]
+            targets = " ".join(f'"{parent}/{name}"' for name in FRESH_FILES)
+            shell = (
+                f"su -c 'rm -f {targets} && for f in {targets}; do "
+                f'[ ! -e "$f" ] || exit 1; done\''
+            )
+            code, out, err = _run_adb(adb, ["-s", serial, "shell", shell], timeout=30)
+            if code != 0 or re.search(rb"permission denied|failed|error:", out + err, re.I):
+                # The rm failed part-way: put the original files back before
+                # reporting, so the device is never left half-wiped.
+                try:
+                    self._fresh_restore_files(adb, serial, pkg, path, files)
+                except Exception:
+                    pass
+                raise ClientError("fresh start failed; the original backup is retained")
+        _ACTIVE_PACKAGE[serial] = pkg
+        self.start(serial)
+        return {"ok": True, "package": pkg, "file": path, "relaunched": True}
+
+    def fresh_new_account(self, serial: str) -> dict:
+        """Back up the save to THIS PC, then remove it on the device."""
+        adb = _find_adb()
+        if not adb:
+            raise ClientError("adb not found - connect an emulator first")
+        errs: list[str] = []
+        for pkg in _packages_for(serial):
+            if not _is_pkg_installed(adb, serial, pkg):
+                errs.append(f"{pkg}: package not installed")
+                continue
+            found = self._read_save(adb, serial, pkg)
+            if not found:
+                errs.append(f"{pkg}: could not read {SAVE_FILE}")
+                continue
+            path = found[0]
+            snapshot = self.fresh_snapshot(serial, pkg, path)
+            # The copy is on disk and synced BEFORE the first byte is removed.
+            backup = write_fresh_backup(snapshot)
+            self.fresh_start(serial, snapshot)
+            return {
+                "ok": True,
+                "package": pkg,
+                "file": path,
+                "localBackup": str(backup),
+                "relaunched": True,
+            }
+        raise ClientError(
+            "Could not prepare a fresh start. Tried: " + (" | ".join(errs) or "no game package")
+        )
+
+    def fresh_restore(self, serial: str, backup_file: str | None = None) -> dict:
+        """Put the newest backup for `serial` back on the device."""
+        path = Path(backup_file) if backup_file else latest_fresh_backup(serial)
+        if not path or not path.is_file():
+            raise ClientError("no backup is available for this device")
+        if path.stat().st_size > FRESH_BACKUP_LIMIT:
+            raise ClientError("backup is too large")
+        try:
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as error:
+            raise ClientError("backup is unreadable") from error
+        result = self.fresh_start(serial, snapshot, restore=True)
+        return {**result, "localBackup": str(path)}
+
 
 # ── CLI (JSON in / JSON out) ─────────────────────────────────────────────────
 
@@ -1981,6 +2256,73 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                 self._respond_json(200, {"ok": True, **reply})
                 return
 
+            # Fresh Start is a LIVE device flow — it removes files from the
+            # client's own machine — so it runs here, not on the hosted
+            # server, which has no adb. Same rule as pull/push: local device,
+            # remote save logic. The hosted studio is still asked to confirm
+            # the licence and the session FIRST: no file is touched unless
+            # that check comes back 200.
+            if self.command == "POST" and path in (
+                "/api/fresh-start/new-account",
+                "/api/fresh-start/restore",
+            ):
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                if not serial:
+                    self._respond_json(400, {"ok": False, "error": "Select a device to continue"})
+                    return
+                restoring = path.endswith("/restore")
+                if not restoring:
+                    confirm = json.dumps(
+                        {
+                            "sessionId": str(payload.get("sessionId") or ""),
+                            "confirmation": str(payload.get("confirmation") or ""),
+                        }
+                    ).encode()
+                    status, _headers, data = self._upstream(
+                        "POST", "/api/fresh-start/authorize", confirm, token
+                    )
+                    if status != 200:
+                        try:
+                            self._respond_json(status, json.loads(data.decode() or "{}"))
+                        except Exception:
+                            self._respond_json(
+                                status,
+                                {"ok": False, "error": "Fresh Start is not authorised on this server"},
+                            )
+                        return
+                try:
+                    reply = (
+                        client.fresh_restore(serial)
+                        if restoring
+                        else client.fresh_new_account(serial)
+                    )
+                except ClientError as exc:
+                    self._respond_json(400, {"ok": False, "error": str(exc)})
+                    return
+                except Exception as exc:  # never leave the fetch hanging
+                    self._respond_json(400, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+                    return
+                if not restoring:
+                    # That session now describes a save which no longer exists
+                    # on the device; drop it so Connect re-reads a clean one.
+                    session_id = str(payload.get("sessionId") or "")
+                    if session_id:
+                        try:
+                            self._upstream(
+                                "POST",
+                                "/api/session/close",
+                                json.dumps({"sessionId": session_id}).encode(),
+                                token,
+                            )
+                        except Exception:
+                            pass
+                self._respond_json(200, reply)
+                return
+
             # Cards -> a friend is a LIVE device flow: every (card, friend)
             # pair is a SendBox round-trip through the user's own emulator, so
             # it must run on THIS machine — the hosted server has no adb. Same
@@ -2156,6 +2498,12 @@ def _cli(argv: list[str]) -> int:
     p_restore = sub.add_parser("restore-backup")
     p_restore.add_argument("--serial", required=True)
 
+    p_fs_new = sub.add_parser("fresh-start-new-account")
+    p_fs_new.add_argument("--serial", required=True)
+    p_fs_restore = sub.add_parser("fresh-start-restore-account")
+    p_fs_restore.add_argument("--serial", required=True)
+    p_fs_restore.add_argument("--backup", default=None)
+
     p_cards_load = sub.add_parser("cards-load")
     p_cards_load.add_argument("--serial", required=True)
     p_cards_send = sub.add_parser("cards-send")
@@ -2192,6 +2540,10 @@ def _cli(argv: list[str]) -> int:
             _emit(client.start(args.serial))
         elif args.cmd == "restore-backup":
             _emit(client.restore_backup(args.serial))
+        elif args.cmd == "fresh-start-new-account":
+            _emit(client.fresh_new_account(args.serial))
+        elif args.cmd == "fresh-start-restore-account":
+            _emit(client.fresh_restore(args.serial, args.backup))
         elif args.cmd == "cards-load":
             _emit(client.cardsLoad(args.serial, config={}))
         elif args.cmd == "cards-send":

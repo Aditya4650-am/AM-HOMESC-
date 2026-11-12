@@ -107,6 +107,15 @@ function hosted(): boolean {
 
 const MAX_BODY = Number(process.env.HC_MAX_BODY ?? 64 * 1024 * 1024); // base64 inflates by ~4/3
 
+/**
+ * The phrase the UI must send before Fresh Start may remove a save.
+ *
+ * Deliberately a fixed literal rather than `true`: the operator has to have
+ * seen the confirmation dialog, and the bridge refuses anything else before
+ * it constructs a single shell command.
+ */
+const FRESH_CONFIRMATION = "DELETE_SAVE_FILES";
+
 /** Reported by /api/health and used as the default client release version. */
 const APP_VERSION = process.env.CLIENT_VERSION?.trim() || "0.2.0";
 
@@ -1297,6 +1306,73 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       error: closed ? undefined : "no such session",
       loaded: listSessions(owner).length,
     });
+    return;
+  }
+
+  /* ------------------------------------------------------- fresh start --
+   * "Create new account" / "Restore previous account" — the pair the
+   * reference tool ships, and the whole of what Fresh Start does.
+   *
+   * The account becomes new because the three files the game keeps
+   * (`SaveGame.db`, the game's own `.bak` and the `.buf` it writes before
+   * committing) are removed and the game is restarted with none of them.
+   * The bridge copies all three to the operator's PC and fsyncs that copy
+   * BEFORE the first byte is deleted, so the operation is reversible on the
+   * same machine the files came from.
+   *
+   * `authorize` is the gate: the licence and the session are confirmed while
+   * the save still exists, so a refusal there means nothing was touched. The
+   * device half runs in the local bridge — this server has no adb when it is
+   * hosted — which is why the EXE's proxy owns the same two routes.
+   */
+  if (route === "POST /api/fresh-start/authorize") {
+    const body = await readJson<{ sessionId?: string; confirmation?: string }>(req);
+    if (!body.sessionId || body.confirmation !== FRESH_CONFIRMATION) {
+      throw new SessionError("Confirm Fresh Start first", 400);
+    }
+    resolveSession(body.sessionId, owner);
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  if (route === "POST /api/fresh-start/new-account") {
+    const body = await readJson<{ serial?: string; sessionId?: string; confirmation?: string }>(req);
+    const serial = String(body.serial ?? "").trim();
+    if (!serial) throw new SessionError("Select a device to continue", 400);
+    if (!body.sessionId || body.confirmation !== FRESH_CONFIRMATION) {
+      throw new SessionError("Confirm Fresh Start first", 400);
+    }
+    // Licence + session ownership, checked before the bridge is called.
+    resolveSession(body.sessionId, owner);
+    const reply = await callBridge(["fresh-start-new-account", "--serial", serial], 300_000);
+    if (!reply?.ok) {
+      throw new SessionError(
+        String(reply?.error ?? "Unable to complete the operation. Restore the previous account."),
+        400,
+      );
+    }
+    // That session described a save which is no longer on the device.
+    try {
+      dropSession(body.sessionId, owner);
+    } catch {
+      /* already gone — Connect simply reads a fresh one */
+    }
+    sendJson(res, 200, { ...reply, ok: true, needsReconnect: true });
+    return;
+  }
+
+  if (route === "POST /api/fresh-start/restore") {
+    const body = await readJson<{ serial?: string }>(req);
+    const serial = String(body.serial ?? "").trim();
+    if (!serial) throw new SessionError("Select a device to continue", 400);
+    const reply = await callBridge(["fresh-start-restore-account", "--serial", serial], 300_000);
+    if (!reply?.ok) {
+      throw new SessionError(
+        String(reply?.error ?? "Unable to restore the previous account."),
+        400,
+      );
+    }
+    sendJson(res, 200, { ...reply, ok: true, needsReconnect: true });
     return;
   }
 

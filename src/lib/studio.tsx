@@ -16,6 +16,7 @@ import {
   type ApplyResponse,
   type MaxGPResponse,
   type EditOp,
+  type NewAccountResponse,
   type OverviewPayload,
 } from "./api.ts";
 import { useToast } from "../components/ui.tsx";
@@ -92,6 +93,10 @@ interface StudioState {
   /** Write the session back to the device and relaunch the game. */
   push: () => Promise<void>;
   pushing: boolean;
+  /** Fresh Start: back the save up to this PC, then remove it on the device. */
+  newAccount: () => Promise<NewAccountResponse | null>;
+  /** Fresh Start: put the newest backup for this device back. */
+  restoreDeviceBackup: () => Promise<void>;
   /**
    * Register (or clear with `null`) the active section's own save callback so
    * the shared `push()` can flush it first. Sections with local-only staged
@@ -538,6 +543,61 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     }
   }, [serial, deviceSerial, overview, pending, applyPending, toast, pushLog]);
 
+  /**
+   * Fresh Start — "Create new account".
+   *
+   * The bridge copies `SaveGame.db`, `SaveGame.db.bak` and `SaveGame.db.buf`
+   * to THIS PC and fsyncs that copy before it removes anything, then relaunches
+   * the game. The session is dropped afterwards because it describes a save the
+   * device no longer has: Connect reads the new one.
+   */
+  const newAccount = useCallback(async (): Promise<NewAccountResponse | null> => {
+    if (!overview || !serial || serial !== deviceSerial || pending.size) return null;
+    if (applying || connecting || pushing) return null;
+    setPushing(true);
+    try {
+      const result = await api.newAccount(serial, overview.meta.id);
+      toast.ok("Game restarted", "Wait for the game to be ready, then press Connect.");
+      pushLog("ok", "Fresh Start completed", result.localBackup);
+      return result;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.err("Fresh Start failed", msg);
+      pushLog("err", "Fresh Start failed", msg);
+      return null;
+    } finally {
+      setOverview(null);
+      setValues({});
+      setDeviceSerial(null);
+      setLastApply(null);
+      setPendingMap(new Map());
+      setPushing(false);
+    }
+  }, [overview, serial, deviceSerial, pending, applying, connecting, pushing, toast, pushLog]);
+
+  /** Fresh Start — "Restore previous account": the copy taken above, back. */
+  const restoreDeviceBackup = useCallback(async () => {
+    if (!serial || applying || connecting || pushing) return;
+    setPushing(true);
+    try {
+      const result = await api.restoreFreshStart(serial);
+      if (!result.ok) throw new Error(result.error || "Unable to restore the previous account");
+      setOverview(null);
+      setValues({});
+      setDeviceSerial(null);
+      setLastApply(null);
+      setPendingMap(new Map());
+      toast.ok("Previous account restored", "Wait for the game to be ready, then press Connect.");
+      pushLog("ok", "Previous account restored", result.localBackup ?? "");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.err("Restore failed", msg);
+      pushLog("err", "Restore failed", msg);
+    } finally {
+      setPushing(false);
+    }
+  }, [serial, applying, connecting, pushing, toast, pushLog]);
+
   const value = useMemo<StudioState>(
     () => ({
       loading,
@@ -566,6 +626,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       connecting,
       push,
       pushing,
+      newAccount,
+      restoreDeviceBackup,
       setSectionSave,
       log,
       pushLog,
@@ -594,6 +656,8 @@ export function StudioProvider({ children }: { children: ReactNode }) {
       connecting,
       push,
       pushing,
+      newAccount,
+      restoreDeviceBackup,
       setSectionSave,
       log,
       pushLog,

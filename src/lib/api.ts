@@ -197,6 +197,20 @@ export interface SeasonPassUnlockResponse {
   pushError?: string;
 }
 
+/**
+ * Fresh Start's reply: the operation ran and the copy it took first lives at
+ * `localBackup` — on the operator's own PC, which is the only place the
+ * restore half can read it back from.
+ */
+export interface NewAccountResponse {
+  ok: boolean;
+  localBackup: string;
+  package?: string;
+  file?: string;
+  relaunched?: boolean;
+  needsReconnect?: boolean;
+}
+
 export interface CosmeticItem {
   id: string;
   label: string;
@@ -510,6 +524,27 @@ export const api = {
 
   restoreBackup: (serial: string) =>
     post<{ ok: boolean; restoredFrom?: string; error?: string }>("/api/device/restore", { serial }),
+
+  /**
+   * Fresh Start — remove the three save files after copying them to this PC.
+   *
+   * `sessionId` and the confirmation are not decoration: the server resolves
+   * the session (licence + ownership) BEFORE the bridge is allowed to touch
+   * a file, so a refused call means the device was never touched.
+   */
+  newAccount: (serial: string, sessionId: string) =>
+    post<NewAccountResponse>("/api/fresh-start/new-account", {
+      serial,
+      sessionId,
+      confirmation: "DELETE_SAVE_FILES",
+    }),
+
+  /** Put the newest Fresh Start backup for `serial` back on the device. */
+  restoreFreshStart: (serial: string) =>
+    post<{ ok: boolean; localBackup?: string; relaunched?: boolean; error?: string }>(
+      "/api/fresh-start/restore",
+      { serial },
+    ),
 };
 
 /**

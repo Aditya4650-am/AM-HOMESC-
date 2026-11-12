@@ -1155,6 +1155,99 @@
   text-align: center;
 }
 
+/* ── key list controls ───────────────────────────────────────────────────── */
+.login-scene .owner-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.55rem;
+}
+
+.login-scene .owner-tools-search {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+/* Segmented status filter: All / Active / Expired / Revoked. */
+.login-scene .owner-seg {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--ls-border-strong);
+  border-radius: 999px;
+  background: var(--ls-surface-2);
+}
+
+.login-scene .owner-seg-btn {
+  padding: 0.3rem 0.7rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ls-muted);
+  font-size: 0.7rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: capitalize;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.login-scene .owner-seg-btn:hover {
+  color: var(--ls-text);
+}
+
+.login-scene .owner-seg-btn--on {
+  background: var(--ls-primary, #4f46e5);
+  color: #fff;
+  box-shadow: 0 4px 10px rgba(79, 70, 229, 0.3);
+}
+
+/* The whole fingerprint, selectable, with its own copy affordance. */
+.login-scene .owner-fp-line {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.login-scene .owner-fp--full {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--ls-border);
+  border-radius: 0.5rem;
+  background: var(--ls-surface-2);
+  color: var(--ls-text);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* Delete reads as destructive even before it is armed; arming it turns the
+ * label into a confirmation so a stray click can never erase a key. */
+.login-scene .owner-btn--del {
+  background: rgba(220, 38, 38, 0.07);
+  border-color: rgba(220, 38, 38, 0.4);
+  box-shadow: none;
+  color: var(--ls-danger);
+}
+
+.login-scene .owner-btn--del:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.14);
+  border-color: rgba(220, 38, 38, 0.7);
+  transform: none;
+  box-shadow: none;
+}
+
+.login-scene .owner-btn--danger-solid {
+  background: linear-gradient(135deg, #dc2626, #ef4444);
+  border-color: rgba(220, 38, 38, 0.75);
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(220, 38, 38, 0.3);
+}
+
 .login-scene .owner-gate {
   display: grid;
   gap: 0.6rem;

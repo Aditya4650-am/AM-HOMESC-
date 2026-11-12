@@ -98,6 +98,11 @@ export function OwnerConsole({
   const [restoreTarget, setRestoreTarget] = useState("");
   const [restoreDays, setRestoreDays] = useState(30);
   const [confirm, setConfirm] = useState<string | null>(null);
+
+  /* List controls: a client list grows fast, so finding one key has to be a
+   * matter of typing part of it rather than scrolling. */
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<"all" | LicenseSnap["status"]>("all");
   const confirmTimer = useRef<number | null>(null);
 
   const armConfirm = (id: string) => {
@@ -237,6 +242,19 @@ export function OwnerConsole({
 
   const activeRows = rows.filter((r) => r.snap.status === "active");
   const deviceCount = rows.reduce((n, r) => n + r.devices.length, 0);
+
+  /** Fingerprint, plan, note or bound device — anything the operator typed. */
+  const needle = query.trim().toLowerCase();
+  const filtered = rows.filter((r) => {
+    if (status !== "all" && r.snap.status !== status) return false;
+    if (!needle) return true;
+    return (
+      r.fp.toLowerCase().includes(needle) ||
+      r.plan.toLowerCase().includes(needle) ||
+      r.note.toLowerCase().includes(needle) ||
+      r.devices.some((d) => d.toLowerCase().includes(needle))
+    );
+  });
 
   /* ------------------------------------------------------------------ view -- */
 
@@ -519,112 +537,163 @@ export function OwnerConsole({
               <section>
                 <h3 className="owner-section-title">
                   <span>Issued keys</span>
-                  <span className="owner-count">{rows.length} total</span>
+                  <span className="owner-count">
+                    {filtered.length === rows.length
+                      ? `${rows.length} total`
+                      : `${filtered.length} of ${rows.length}`}
+                  </span>
                 </h3>
+
                 {rows.length === 0 ? (
                   <div className="owner-empty">
                     No keys yet. Issue the first one above — it works immediately, no restart.
                   </div>
                 ) : (
-                  <div className="owner-list">
-                    {rows.map((r) => {
-                      const revoked = r.snap.status === "revoked";
-                      const expired = r.snap.status === "expired";
-                      const id = r.fp;
-                      return (
-                        <article className="owner-row" key={id}>
-                          <div className="owner-row-top">
-                            <span className="owner-fp" title={r.fp}>
-                              {r.fp.slice(0, 18)}…
-                            </span>
-                            <span className="owner-pill owner-pill--plan">{SHORT_PLAN[r.plan] ?? r.plan}</span>
-                            {r.maxDevices > 1 ? (
-                              <span className="owner-pill owner-pill--group">
-                                group · {r.devices.length}/{r.maxDevices}
-                              </span>
-                            ) : (
-                              <span className="owner-pill">single</span>
-                            )}
-                            <span
-                              className={`owner-pill ${
-                                revoked || expired ? "owner-pill--off" : "owner-pill--ok"
-                              }`}
-                            >
-                              {r.snap.status}
-                            </span>
-                            <span className="owner-row-remain">
-                              {revoked ? "revoked" : expired ? "expired" : remain(r.expiresAt)}
-                            </span>
-                          </div>
-                          <div className="owner-row-sub">
-                            <span>created {stamp(r.createdAt)}</span>
-                            {r.note ? <span>{r.note}</span> : null}
-                          </div>
-                          {r.devices.length > 0 ? (
-                            <div className="owner-row-sub">
-                              <span style={{ fontFamily: "var(--font-mono)" }}>{r.devices.join(" · ")}</span>
-                            </div>
-                          ) : null}
-                          <div className="owner-row-actions">
-                            <button
-                              type="button"
-                              className="owner-btn owner-btn--ghost owner-btn--sm"
-                              onClick={() => void copy(r.fp, "Key fingerprint")}
-                              title="Copy the full fingerprint"
-                            >
-                              <Icon name="copy" />
-                              Fingerprint
-                            </button>
-                            <button
-                              type="button"
-                              className="owner-btn owner-btn--ghost owner-btn--sm"
-                              disabled={busy}
-                              onClick={() => void act("reset-devices", id)}
-                            >
-                              <Icon name="refresh" />
-                              Reset devices
-                            </button>
-                            {revoked || expired ? (
+                  <>
+                    <div className="owner-tools">
+                      <input
+                        className="owner-input owner-input--mono owner-tools-search"
+                        type="search"
+                        spellCheck={false}
+                        autoComplete="off"
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        placeholder="Search fingerprint, note or device…"
+                        aria-label="Search keys"
+                      />
+                      <div className="owner-seg" role="group" aria-label="Filter by status">
+                        {(["all", "active", "expired", "revoked"] as const).map((s) => (
+                          <button
+                            key={s}
+                            type="button"
+                            className={`owner-seg-btn${status === s ? " owner-seg-btn--on" : ""}`}
+                            aria-pressed={status === s}
+                            onClick={() => setStatus(s)}
+                          >
+                            {s}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {filtered.length === 0 ? (
+                      <div className="owner-empty">No key matches “{query.trim()}”.</div>
+                    ) : (
+                    <div className="owner-list">
+                      {filtered.map((r) => {
+                        const revoked = r.snap.status === "revoked";
+                        const expired = r.snap.status === "expired";
+                        const id = r.fp;
+                        const armed = confirm === `${id}:delete`;
+                        return (
+                          <article className="owner-row" key={id}>
+                            <div className="owner-fp-line">
+                              <code className="owner-fp owner-fp--full" title={r.fp}>
+                                {r.fp}
+                              </code>
                               <button
                                 type="button"
-                                className="owner-btn owner-btn--ok owner-btn--sm"
-                                disabled={busy}
-                                onClick={() => void act("restore", id)}
+                                className="owner-copy"
+                                onClick={() => void copy(r.fp, "Key fingerprint")}
+                                title="Copy the full fingerprint"
                               >
-                                <Icon name="unlock" />
-                                Restore
+                                <Icon name="copy" />
+                                Copy
                               </button>
-                            ) : (
+                            </div>
+
+                            <div className="owner-row-top">
+                              <span className="owner-pill owner-pill--plan">{SHORT_PLAN[r.plan] ?? r.plan}</span>
+                              {r.maxDevices > 1 ? (
+                                <span className="owner-pill owner-pill--group">
+                                  group · {r.devices.length}/{r.maxDevices}
+                                </span>
+                              ) : (
+                                <span className="owner-pill">single</span>
+                              )}
+                              <span
+                                className={`owner-pill ${
+                                  revoked || expired ? "owner-pill--off" : "owner-pill--ok"
+                                }`}
+                              >
+                                {r.snap.status}
+                              </span>
+                              <span className="owner-row-remain">
+                                {revoked ? "revoked" : expired ? "expired" : remain(r.expiresAt)}
+                              </span>
+                            </div>
+                            <div className="owner-row-sub">
+                              <span>created {stamp(r.createdAt)}</span>
+                              {r.note ? <span>{r.note}</span> : null}
+                            </div>
+                            {r.devices.length > 0 ? (
+                              <div className="owner-row-sub">
+                                <span style={{ fontFamily: "var(--font-mono)" }}>{r.devices.join(" · ")}</span>
+                              </div>
+                            ) : null}
+                            <div className="owner-row-actions">
                               <button
                                 type="button"
-                                className={`owner-btn ${confirm === `${id}:revoke` ? "owner-btn--danger" : "owner-btn--ghost"} owner-btn--sm`}
+                                className="owner-btn owner-btn--sm"
+                                onClick={() => void copy(r.fp, "Key fingerprint")}
+                                title="Copy the full fingerprint"
+                              >
+                                <Icon name="copy" />
+                                Copy
+                              </button>
+                              <button
+                                type="button"
+                                className="owner-btn owner-btn--ghost owner-btn--sm"
+                                disabled={busy}
+                                onClick={() => void act("reset-devices", id)}
+                              >
+                                <Icon name="refresh" />
+                                Reset devices
+                              </button>
+                              {revoked || expired ? (
+                                <button
+                                  type="button"
+                                  className="owner-btn owner-btn--ok owner-btn--sm"
+                                  disabled={busy}
+                                  onClick={() => void act("restore", id)}
+                                >
+                                  <Icon name="unlock" />
+                                  Restore
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className={`owner-btn ${confirm === `${id}:revoke` ? "owner-btn--danger" : "owner-btn--ghost"} owner-btn--sm`}
+                                  disabled={busy}
+                                  onClick={() => {
+                                    if (confirm === `${id}:revoke`) void act("revoke", id);
+                                    else armConfirm(`${id}:revoke`);
+                                  }}
+                                >
+                                  <Icon name="lock" />
+                                  {confirm === `${id}:revoke` ? "Confirm revoke" : "Revoke"}
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                className={`owner-btn ${armed ? "owner-btn--danger-solid" : "owner-btn--del"} owner-btn--sm`}
                                 disabled={busy}
                                 onClick={() => {
-                                  if (confirm === `${id}:revoke`) void act("revoke", id);
-                                  else armConfirm(`${id}:revoke`);
+                                  if (armed) void act("delete", id);
+                                  else armConfirm(`${id}:delete`);
                                 }}
+                                title="Delete this key permanently"
                               >
-                                <Icon name="lock" />
-                                {confirm === `${id}:revoke` ? "Confirm revoke" : "Revoke"}
+                                <Icon name="trash" />
+                                {armed ? "Confirm delete" : "Delete"}
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              className={`owner-btn ${confirm === `${id}:delete` ? "owner-btn--danger" : "owner-btn--ghost"} owner-btn--sm`}
-                              disabled={busy}
-                              onClick={() => {
-                                if (confirm === `${id}:delete`) void act("delete", id);
-                                else armConfirm(`${id}:delete`);
-                              }}
-                            >
-                              <Icon name="trash" />
-                              {confirm === `${id}:delete` ? "Confirm delete" : "Delete"}
-                            </button>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                    )}
+                  </>
                 )}
               </section>
 

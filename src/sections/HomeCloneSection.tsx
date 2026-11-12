@@ -175,13 +175,11 @@ export function HomeCloneSection() {
     <section className="am-panel">
       <Head title="IGG Account Clone" />
 
-      <div className="am-hint" style={{ margin: "8px 0 14px", lineHeight: 1.5 }}>
-        Clone one account — the <b>IGG account</b> shipped with this tool — into whichever client
-        you have connected. It brings the whole house: every room and the furniture unlocked in it,
-        the garden, the decorations, characters, avatars, costumes and photo albums. Your own level,
-        coins, stars and statistics stay exactly as they are, which is what keeps the server's
-        progress check quiet. The device is re-pulled first, so the clone lands on what the game
-        holds right now, and nothing is written until you press <b>Push</b>.
+      <div className="am-hint" style={{ margin: "8px 0 14px", lineHeight: 1.6 }}>
+        Put the <b>IGG account's</b> whole home onto the client you have connected — every room
+        built with its furniture, the garden, the decorations, characters, avatars, costumes and
+        photo albums. Your own level, coins, stars and statistics stay exactly as they are.
+        Nothing is written until you press <b>Push</b>, and every push backs your save up first.
       </div>
 
       <div className="am-label">Source account</div>
@@ -203,27 +201,17 @@ export function HomeCloneSection() {
           )}
         </div>
       )}
-      {source && !source.exists ? (
-        <div className="am-hint" style={{ margin: "6px 0" }}>
-          The built-in account file is not where the tool expects it, so cloning is disabled until
-          it is restored.
-        </div>
-      ) : null}
 
       <div className="am-label" style={{ marginTop: 14 }}>
         What lands on your device
       </div>
       <div className="am-hint" style={{ margin: "6px 0 0", lineHeight: 1.6 }}>
-        <b>Copied</b> — every room and its repairs (so the house is built and its furniture is
-        unlocked), every room design the IGG account owns (this is what keeps the decorated
-        variants — the seasonal and event designs — on show instead of resetting to the plain base
-        ones), the furniture design chosen in each room, the garden and its decorations,
-        removed/erased objects, characters, avatars, costumes, minigames, match-3 state and photo
-        albums.
+        <b>Copied</b> — every room and its repairs, every room design the IGG account owns, the
+        furniture design chosen in each room, the garden and its decorations, characters, avatars,
+        costumes, minigames, match-3 state and photo albums.
         <br />
         <b>Left yours</b> — level, stars, coins, lives, statistics, quests, events, season passes,
-        player items and the save's secret values. Your account keeps its own history; it just gains
-        the IGG house.
+        player items and the save's secret values.
       </div>
 
       <div className="am-row" style={{ margin: "16px 0" }}>
@@ -244,46 +232,14 @@ export function HomeCloneSection() {
         {last ? <span className="am-hint">{last}</span> : null}
       </div>
 
-      <div className="am-hint" style={{ margin: "8px 0 4px", lineHeight: 1.5 }}>
-        <b>Honest note.</b> Homescapes exposes no client call to download another player's account,
-        so the clone source is a save file held by the tool — this panel never fetches anything
-        live. The 9.2.101 APK shows the ban is decided <i>server-side</i>: Playrix scores an
-        account's progress against its own history (`AntiCheat.Server.ScoreValidation` → the
-        “suspicious activity” window), and that score cannot be rewritten from a save. Measured
-        2026-10-17: a byte-for-byte full clone <i>and</i> a ban-guarded full clone both ended in the
-        warning. <b>That is why this clone copies content only</b> — never progress — so your level,
-        balances, statistics and secret values stay yours. Every push backs your save up first, so{" "}
-        <b>Restore</b> always undoes a clone.
-      </div>
-
-      <div className="am-label" style={{ marginTop: 20 }}>
-        Golden Pass — tested, does not unlock
+      <div className="am-label" style={{ marginTop: 8 }}>
+        Golden Pass
       </div>
       <div className="am-hint" style={{ margin: "6px 0 0", lineHeight: 1.6 }}>
-        <b>Measured result, 2026-10-20 — real in-game test.</b> The free-row state was written and
-        pushed to the live device, and read back from the game's own re-saved file: all 31 stages,
-        <code>currProgress=30</code>, <code>currentOpenedStageIndex=31</code> all <i>survived
-        untouched</i>, and the account was <b>not</b> rolled back (level 40, 123,456 coins, 42
-        stars, 13 areas — all intact, no popup). But the game <b>deleted{" "}
-        <code>Currency.SSPProcedure46Points</code></b>, and the pass rendered at stage 1 of 31 with
-        the next stage locked at <code>0/1</code>. <b>The displayed tier derives from that currency
-        server-side, not from the completion cache</b> — so with it removed the progress is inert.
-        <br />
-        <b>Both rows are therefore unreachable from the save.</b> The free row needs a tier currency
-        the server owns and strips on the next sync; the gold row needs the golden ticket, which{" "}
-        <code>libgame.so</code> prices, sells and validates through{" "}
-        <code>ValidatePurchase</code>/<code>ConsumePurchase</code>, reporting{" "}
-        <code>payer_type</code> and <code>inapps_count/sum</code> upward.{" "}
-        <code>LogEventComponent.goldenPassBought</code> reads <code>true</code> on the maxed donor
-        and <code>false</code> here — but it asserts a receipt this account never made, so writing
-        it would be purchase spoofing, which this tool does not do.
-        <br />
-        <b>The research below is real and reusable</b> — the 59-component registry, the 31-stage
-        record shape and the three components that carry pass state are all measured, and are what
-        proved the mechanism closed. The button still runs and still reports honestly; it just does
-        not claim an unlock the game will not keep.
-        <br />
-        Every push backs your save up first.
+        Writes the free-row progress and pushes it. The game deletes the tier currency on its next
+        sync, so the pass does not stay unlocked — the button reports exactly what it found
+        instead of claiming an unlock. The gold row is refused outright; it is a real-money
+        purchase.
       </div>
 
       <div className="am-row" style={{ margin: "16px 0" }}>
@@ -293,7 +249,7 @@ export function HomeCloneSection() {
           disabled={spRunning || !serial}
           title={
             serial
-              ? "Pull the device, write the season-pass progress, push and relaunch. Measured NOT to unlock: the game strips the tier currency."
+              ? "Pull the device, write the season-pass progress, push and relaunch"
               : "Connect a device first"
           }
           onClick={() => void unlockSeasonPass()}
