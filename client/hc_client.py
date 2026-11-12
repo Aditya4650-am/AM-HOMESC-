@@ -120,8 +120,28 @@ def normalize_base_url(url: str) -> str:
     return urlunsplit((u.scheme, u.netloc, "", "", ""))
 
 def with_device_param(url: str, device_id: str) -> str:
-    sep = "&" if "?" in url else "?"
-    return f"{url}{sep}did={device_id}"
+    """Carry the machine's device id to the page on the window URL itself.
+
+    pywebview defaults to `private_mode=True`, so WebView2 runs InPrivate and
+    `localStorage` is empty at the start of every launch ("in private mode,
+    cookies and local storage are not preserved"). The EXE also serves the UI
+    from a loopback port that changes every launch, so the origin itself is
+    different each time — there is no storage anywhere that survives. The web
+    app's boot code therefore had nothing to read and minted a fresh random id
+    on each start, which is exactly what made the id change on every restart
+    and the key (bound to one id) stop matching the machine.
+
+    Putting the id on the URL makes it available to the page synchronously,
+    before React mounts: no bridge, no polling, no storage, no race. Any
+    `did` already on the URL is replaced so the page can never see two.
+    """
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    u = urlsplit(url)
+    pairs = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True) if k != "did"]
+    if device_id:
+        pairs.append(("did", device_id))
+    return urlunsplit((u.scheme, u.netloc, u.path, urlencode(pairs), u.fragment))
 
 # pywebview exposes the api object as window.pywebview.api.*. The web app looks
 # for window.hcNative.*, so we alias it as soon as the bridge is ready.
@@ -878,6 +898,20 @@ class HomescapesClient:
 
     def version(self) -> str:
         return APP_VERSION
+
+    def deviceId(self) -> str:
+        """This machine's device id, file-backed and stable across launches.
+
+        Lives in %APPDATA%\\Homescapes-Save-Studio\\device.id — the same value
+        every time this EXE starts on this PC, so a key bound to it keeps
+        matching. The page reads it from `?did=` on the URL first (synchronous,
+        before React mounts); this bridge method is the fallback for builds
+        that predate that, and the proof for the UI that the id is real.
+        """
+        try:
+            return get_device_id()
+        except Exception:
+            return ""
 
     def installUpdate(self, release: dict) -> dict:
         """Download a verified release and swap this EXE in place.

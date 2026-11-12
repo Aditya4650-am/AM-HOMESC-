@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, type LicenseSnap } from "../lib/api.ts";
-import { clearToken, getDeviceId, getToken, setToken } from "../lib/auth-store.ts";
+import { clearToken, getDeviceId, getToken, resolveDeviceId, setToken } from "../lib/auth-store.ts";
 import { useToast } from "../components/ui.tsx";
 import { Icon, MiniSpinner } from "../components/icons.tsx";
 
@@ -39,7 +39,17 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
   const [deviceId, setDeviceId] = useState("");
 
   useEffect(() => {
-    setDeviceId(getDeviceId());
+    // The EXE's file-backed id arrives on the URL synchronously; a plain
+    // browser's comes from localStorage. `resolveDeviceId` only waits when the
+    // EXE opened without `?did=` (an older build), so this settles immediately
+    // in the normal case.
+    let alive = true;
+    void resolveDeviceId().then((id) => {
+      if (alive) setDeviceId(id);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -85,7 +95,14 @@ export function LockScreen({ onUnlocked }: { onUnlocked: (snap: LicenseSnap) => 
     setBusy(true);
     setError(null);
     try {
-      const res = await api.licenseActivate(key.trim(), deviceId || getDeviceId());
+      const dev = deviceId || getDeviceId();
+      if (!dev) {
+        // The EXE never mints an id of its own: a fake one here would bind the
+        // key to a number this machine will not have on the next launch.
+        setError("Device id is not ready yet — wait a second, then press Unlock again.");
+        return;
+      }
+      const res = await api.licenseActivate(key.trim(), dev);
       setToken(res.token, res.license.plan);
       onUnlocked(res.license);
       try {
