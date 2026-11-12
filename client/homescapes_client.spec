@@ -70,6 +70,12 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# The icon clients see in Explorer, the taskbar and the shortcut. It must be
+# a real multi-size .ico (16..256) so Windows never has to upscale a blurry
+# bitmap - app.ico is generated from the IGG TOOL artwork at 16/24/32/48/64/
+# 128/256 px. PyInstaller reads it at BUILD time only (no PIL in the bundle).
+icon_path = os.path.join(ROOT, "app.ico")
+
 # onefile: binaries + datas go straight into the EXE (no COLLECT folder).
 exe = EXE(
     pyz,
@@ -78,6 +84,7 @@ exe = EXE(
     a.datas,
     [],
     name="Homescapes Save Studio",
+    icon=icon_path if os.path.isfile(icon_path) else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
