@@ -477,7 +477,7 @@ export const api = {
    * pops the genuine "card received" popup. `friends` are recipient device
    * save ids; `cards` are card ids such as `card_19`.
    */
-  cardsSend: (payload: { serial: string; friends: string[]; cards: string[] }) =>
+  cardsSend: (payload: { serial: string; friends: string[]; cards: string[]; delayMs?: number }) =>
     post<
       {
         ok: boolean;

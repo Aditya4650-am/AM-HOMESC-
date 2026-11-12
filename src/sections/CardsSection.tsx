@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AmActions } from "./AmActions.tsx";
 import { AmBar, AmCheck, AmEmpty, useToast } from "../components/ui.tsx";
 import { useStudio } from "../lib/studio.tsx";
@@ -41,7 +41,6 @@ import {
  *    tick-the-set toggle and the set's completion bar. Exactly the layout
  *    your IGG Cards tab uses, so granting a card you have never held is
  *    the same one click as topping up one you hold.
- *  - Received gifts: HistoryComponent receipts, read-only.
  */
 
 const PREFIX = "SpecialEvents.CardsCollection.";
@@ -51,30 +50,10 @@ const FRIENDS_PREFIX =
 const DELAY_DEFAULT = 800;
 const DELAY_MIN = 300;
 const DELAY_MAX = 10_000;
-const HISTORY_CAP = 8;
 const ID_RE = /^[A-Za-z0-9]{4,24}$/;
 
 const OWNED_ID_RE = /^v\.Core\.v\.OwnedCards\[(\d+)\]\.v\.cardId$/;
 const OWNED_STOCK_RE = /^v\.Core\.v\.OwnedCards\[(\d+)\]\.v\.inStockCount$/;
-const HISTORY_RE = /^v\.HistoryComponent\.v\.History\[(\d+)\]\.v\.PacksRecieved\[(\d+)\]$/;
-
-/**
- * `PackLevel3;[{card_id:card_142,set_id:set_15,…},…];{"event_id":…,"reason":"CollectionChest3"}`
- * → pack level, receipt reason, and the contained card ids (read-only history).
- */
-function parsePack(raw: string): { level: string | null; reason: string | null; cards: string[] } {
-  const parts = raw.split(";");
-  const level = (parts[0] ?? "").replace(/^PackLevel/, "Level ") || null;
-  const joined = parts.slice(1).join(";");
-  const cards: string[] = [];
-  const re = /card_id:(card_\d+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(joined)) !== null) {
-    if (m[1] !== undefined) cards.push(m[1].replace(/^card_/, "#"));
-  }
-  const rm = /"reason":"([^"]+)"/.exec(joined);
-  return { level, reason: rm && rm[1] !== undefined ? rm[1] : null, cards };
-}
 
 /** `card_08` → 8. */
 function cardNumber(id: string): number | null {
@@ -165,6 +144,20 @@ export function CardsSection() {
   const [delay, setDelay] = useState(String(DELAY_DEFAULT));
   const [delivered, setDelivered] = useState<DeliveryReport | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Seconds elapsed for the in-flight send, shown on the button so a long
+   *  batch visibly progresses instead of looking frozen. */
+  const [elapsed, setElapsed] = useState(0);
+  const elapsedTimer = useRef<number | null>(null);
+  const stopElapsed = () => {
+    if (elapsedTimer.current !== null) {
+      window.clearInterval(elapsedTimer.current);
+      elapsedTimer.current = null;
+    }
+    setElapsed(0);
+  };
+
+  // Never leave a ticker running after the tab is left.
+  useEffect(() => stopElapsed, []);
 
   useEffect(() => {
     if (!overview) {
@@ -326,18 +319,6 @@ export function CardsSection() {
     );
   }, [friendFields]);
 
-  const history = useMemo(() => {
-    const rows: { hi: number; pi: number; level: string | null; reason: string | null; cards: string[] }[] = [];
-    for (const f of fields) {
-      const m = HISTORY_RE.exec(f.key);
-      if (m && m[1] !== undefined && m[2] !== undefined && typeof f.value === "string" && f.value !== "") {
-        const p = parsePack(f.value);
-        rows.push({ hi: Number(m[1]), pi: Number(m[2]), ...p });
-      }
-    }
-    return rows.sort((a, b) => b.hi - a.hi || b.pi - a.pi).slice(0, HISTORY_CAP);
-  }, [fields]);
-
   const stagedKeys = useMemo(
     () => [...pending.keys()].filter((k) => k.startsWith(PREFIX)),
     [pending],
@@ -430,23 +411,54 @@ export function CardsSection() {
         );
         return;
       }
+      // A set filter is a promise: with `set_03` showing, ONLY set_03 goes
+      // out — never the rest of the ticked album. Selection alone decides
+      // when no filter is active.
+      const visibleNums = new Set<number>();
+      for (const [, nums] of visibleGroups) for (const n of nums) visibleNums.add(n);
+      const scoped = setFilter === "all" ? selectedCards : selectedCards.filter((n) => visibleNums.has(n));
+      if (scoped.length === 0) {
+        toast.warn(
+          `Nothing ticked in ${setFilter}`,
+          "The cards you ticked belong to another set. Tick cards in the set you are viewing, or switch back to All.",
+        );
+        return;
+      }
+      const cardList = scoped.map((n) => cardIdOf(n));
+
       const d = Math.min(DELAY_MAX, Math.max(DELAY_MIN, Math.floor(Number(delay) || DELAY_DEFAULT)));
       setBusy(true);
+      const startedAt = Date.now();
+      elapsedTimer.current = window.setInterval(() => {
+        setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+      }, 1000);
+      setElapsed(0);
       try {
+        const pairs = cardList.length * recipients.length;
         pushLog(
           "info",
           "Sending cards via Playrix SendBox",
-          `${selectedCards.length} card${selectedCards.length === 1 ? "" : "s"} → ${recipients.length} recipient${
-            recipients.length === 1 ? "" : "s"
-          } · ${copies} cop${copies === 1 ? "y" : "ies"}`,
+          `${cardList.length} card${cardList.length === 1 ? "" : "s"}${
+            setFilter !== "all" && scoped.length !== selectedCards.length ? ` of ${setFilter}` : ""
+          } → ${recipients.length} recipient${recipients.length === 1 ? "" : "s"} · ${pairs} SendBox round-trip${
+            pairs === 1 ? "" : "s"
+          } · ${d} ms apart`,
         );
         const res = await api.cardsSend({
           serial: serial ?? "",
           friends: recipients,
-          cards: selectedCards.map((n) => cardIdOf(n)),
+          cards: cardList,
+          delayMs: d,
         });
         if (res.ok) {
-          pushLog("ok", "All cards sent", `${res.sent}/${res.total} SendBox deliveries confirmed`);
+          // Done means done: drop the ticked set so the next send starts
+          // from a clean slate instead of re-sending stale ticks.
+          setSelected(new Set());
+          pushLog(
+            "ok",
+            "Cards sent",
+            `${res.sent}/${res.total} SendBox deliveries confirmed${setFilter !== "all" ? ` · ${setFilter} only` : ""}`,
+          );
           toast.ok(
             "Cards sent",
             `${res.sent}/${res.total} cards delivered through Playrix SendBox — each one got its own ` +
@@ -464,6 +476,7 @@ export function CardsSection() {
         toast.err("Cards not sent", msg);
       } finally {
         setBusy(false);
+        stopElapsed();
       }
       return;
     }
@@ -563,6 +576,7 @@ export function CardsSection() {
         toast.err("Grant failed", msg);
       } finally {
         setBusy(false);
+        stopElapsed();
       }
     })();
   };
@@ -701,12 +715,16 @@ export function CardsSection() {
               disabled={busy}
               title={
                 mode === "friend"
-                  ? "Validate the plan and report the honest outcome"
+                  ? "Send every ticked card to every ticked friend through Playrix SendBox"
                   : `Write the ticked cards into the album — ${BATCH_MAX} a wave, ${selected.size} ticked`
               }
               onClick={onSend}
             >
-              {busy ? "Sending…" : "Send"}
+              {busy
+                ? mode === "friend"
+                  ? `Sending… ${elapsed}s`
+                  : "Sending…"
+                : "Send"}
             </button>
           </div>
 
@@ -815,24 +833,9 @@ export function CardsSection() {
             );
           })}
 
-          {/* --------------------------------------------------------- history */}
-          {history.length > 0 ? (
-            <>
-              <div className="am-label">Received gifts</div>
-              {history.map((h) => (
-                <div className="am-log-row" key={`${h.hi}.${h.pi}`}>
-                  <b>
-                    H{h.hi}·P{h.pi}
-                  </b>
-                  <span>
-                    {h.level ?? "Pack"}
-                    {h.reason ? ` · ${h.reason}` : ""}
-                    {h.cards.length > 0 ? ` · ${h.cards.join(" ")}` : ""}
-                  </span>
-                </div>
-              ))}
-            </>
-          ) : null}
+          {/* The "Received gifts" list that used to sit here is gone — the
+              HistoryComponent scan still runs for staging, but its rows are no
+              longer rendered. Everything else on this tab is untouched. */}
 
           {stagedKeys.length > 0 ? (
             <div className="am-row" style={{ marginTop: 14 }}>

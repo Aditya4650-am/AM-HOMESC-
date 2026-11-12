@@ -1264,7 +1264,7 @@ class HomescapesClient:
         return _card_config(None)
 
     def cardsSendAll(self, serial: str, card_ids: list[str], friend_ids: list[str],
-                     config: dict | None = None) -> dict:
+                     config: dict | None = None, delay_ms: int = 0) -> dict:
         """Send every card in card_ids to every friend in friend_ids via SendBox.
 
         Each (card, friend) pair is one real SendBox round-trip so the in-game
@@ -1274,6 +1274,7 @@ class HomescapesClient:
         sent = 0
         failed: list[dict] = []
         results: list[dict] = []
+        throttle_strikes = 0
         if not friend_ids:
             return {"ok": False, "status": "error", "error": "no friends to send to"}
         cards = [c for c in (card_ids or []) if re.fullmatch(r"card_\d{2,3}", str(c))]
@@ -1297,12 +1298,12 @@ class HomescapesClient:
                     sent += 1
                 else:
                     failed.append({"card_id": card_id, "to": friend_id, "res": res})
-                    # A credential-level failure (token rejected, cadence
-                    # block) is identical for every remaining pair — stop
-                    # instead of repeating it N*M more times.
-                    err = str((res.get("error") or "")).lower()
-                    if res.get("http") in (401, 403) or "token rejected" in err \
-                            or "temporarily blocked" in err or "advertising id" in err:
+                    err = str((res.get("error") or "").lower())
+                    # Credential-level failures are identical for every
+                    # remaining pair — stop instead of repeating an unfixable
+                    # error N*M times.
+                    if res.get("http") == 401 or "token rejected" in err \
+                            or "advertising id" in err:
                         for c2 in cards:
                             for f2 in friend_ids:
                                 if c2 == card_id and f2 == friend_id:
@@ -1317,6 +1318,33 @@ class HomescapesClient:
                                                "res": {"ok": False, "status": "skipped",
                                                        "error": f"aborted: {res.get('error')}"}})
                         break
+                    # 403 = Playrix cadence limit. Back off (never abort the
+                    # whole batch on a rate limit) and keep going; only give
+                    # up once it is clearly persistent.
+                    if res.get("http") == 403 or "temporarily blocked" in err \
+                            or "retries exhausted" in err:
+                        throttle_strikes += 1
+                        if throttle_strikes >= 6:
+                            for c2 in cards:
+                                for f2 in friend_ids:
+                                    if any(r["card_id"] == c2 and r["to"] == f2
+                                           for r in results):
+                                        continue
+                                    res2 = {"ok": False, "status": "skipped",
+                                            "error": "aborted: Playrix is rate-limiting this account "
+                                                     "— raise the delay and retry"}
+                                    results.append({"card_id": c2, "to": f2, "res": res2})
+                                    failed.append({"card_id": c2, "to": f2, "res": res2})
+                            break
+                        time.sleep(min(6.0 * throttle_strikes, 15.0))
+                    else:
+                        throttle_strikes = 0
+                # Pace the batch. Playrix throttles a burst of SaveBox calls
+                # (403 cadence), so the UI's Delay field is honoured here —
+                # without it a 150-card batch fired all at once and the tail
+                # came back "temporarily blocked".
+                if delay_ms > 0 and (sent + len(failed)) < len(cards) * len(friend_ids):
+                    time.sleep(min(delay_ms, 10_000) / 1000.0)
             else:
                 continue
             break
@@ -1951,7 +1979,13 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                     )
                     return
                 try:
-                    reply = client.cardsSendAll(serial, cards, friends, config={})
+                    raw_delay = payload.get("delayMs")
+                    delay_ms = max(0, min(10_000, int(raw_delay or 0)))
+                except Exception:
+                    delay_ms = 0
+                try:
+                    reply = client.cardsSendAll(serial, cards, friends, config={},
+                                                delay_ms=delay_ms)
                 except ClientError as exc:
                     self._respond_json(400, {"ok": False, "error": str(exc)})
                     return
@@ -2098,6 +2132,7 @@ def _cli(argv: list[str]) -> int:
     p_cards_send_all.add_argument("--serial", required=True)
     p_cards_send_all.add_argument("--cards", required=True)
     p_cards_send_all.add_argument("--friends", required=True)
+    p_cards_send_all.add_argument("--delay-ms", type=int, default=0)
     p_cards_inbox = sub.add_parser("cards-inbox")
     p_cards_inbox.add_argument("--serial", required=True)
 
@@ -2130,7 +2165,8 @@ def _cli(argv: list[str]) -> int:
         elif args.cmd == "cards-send-all":
             cards = [c.strip() for c in args.cards.split(",") if c.strip()]
             friends = [f.strip() for f in args.friends.split(",") if f.strip()]
-            _emit(client.cardsSendAll(args.serial, cards, friends, config={}))
+            _emit(client.cardsSendAll(args.serial, cards, friends, config={},
+                                      delay_ms=max(0, int(args.delay_ms or 0))))
         elif args.cmd == "cards-inbox":
             _emit(client.cardsInbox(args.serial, config={}))
         elif args.cmd == "proxy":

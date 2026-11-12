@@ -402,6 +402,8 @@ interface CardsSendBody {
   friends?: string[];
   /** Card ids such as `card_19` to send to every friend. */
   cards?: string[];
+  /** Per-pair pacing (ms). Mirrors the UI's Delay field; clamped 0–10 000. */
+  delayMs?: number;
   refreshIntegrity?: boolean;
 }
 
@@ -1233,15 +1235,28 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     if (!Array.isArray(body.cards) || body.cards.length === 0) {
       throw new SessionError("`cards` must be a non-empty array of card ids (e.g. card_01)", 400);
     }
-    const reply = await callBridge([
-      "cards-send-all",
-      "--serial",
-      body.serial,
-      "--cards",
-      body.cards.join(","),
-      "--friends",
-      body.friends.join(","),
-    ]);
+    const delayMs = Math.max(0, Math.min(10_000, Math.floor(Number(body.delayMs) || 0)));
+    const pairs = body.cards.length * body.friends.length;
+    // The flat 180 s bridge budget used to SIGKILL any real batch: 150 cards
+    // x a few friends is hundreds of paced SendBox round-trips, so the run
+    // died at 180 s and the UI reported a failure for work that was going
+    // fine. Budget ~1.2 s per pair (network + the user's delay) with a
+    // generous floor, and never let it run away.
+    const bridgeTimeoutMs = Math.min(30 * 60_000, Math.max(120_000, pairs * 1_200 + 60_000));
+    const reply = await callBridge(
+      [
+        "cards-send-all",
+        "--serial",
+        body.serial,
+        "--cards",
+        body.cards.join(","),
+        "--friends",
+        body.friends.join(","),
+        "--delay-ms",
+        String(delayMs),
+      ],
+      bridgeTimeoutMs,
+    );
     if (reply?.ok) {
       sendJson(res, 200, reply);
       return;
