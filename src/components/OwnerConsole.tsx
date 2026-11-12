@@ -577,7 +577,11 @@ export function OwnerConsole({
                     </div>
 
                     {filtered.length === 0 ? (
-                      <div className="owner-empty">No key matches “{query.trim()}”.</div>
+                      <div className="owner-empty">
+                        {needle
+                          ? `No key matches “${query.trim()}”${status === "all" ? "." : ` with status ${status}.`}`
+                          : `No ${status} key.`}
+                      </div>
                     ) : (
                     <div className="owner-list">
                       {filtered.map((r) => {
