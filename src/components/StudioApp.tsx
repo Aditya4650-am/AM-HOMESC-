@@ -197,10 +197,10 @@ function Shell({ owner }: { owner: boolean }) {
   const clientName =
     connected && typeof values["Properties.name"] === "string" ? (values["Properties.name"] as string) : null;
   const clientLevel =
-    connected && typeof values["Properties.LID_Lvl"] === "number"
-      ? (values["Properties.LID_Lvl"] as number)
-      : connected && typeof values["Properties.level"] === "number"
-        ? (values["Properties.level"] as number)
+    connected && typeof values["Properties.level"] === "number"
+      ? (values["Properties.level"] as number)
+      : connected && typeof values["Properties.LID_Lvl"] === "number"
+        ? (values["Properties.LID_Lvl"] as number)
         : null;
   const statusText = connected
     ? `${clientName ?? "Client game"}${clientLevel !== null ? ` · lvl ${clientLevel}` : ""}`

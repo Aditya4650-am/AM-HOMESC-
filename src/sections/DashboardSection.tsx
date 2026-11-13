@@ -91,13 +91,13 @@ const STATS: readonly DashStat[] = [
   {
     key: "level",
     label: "Level",
-    path: "Properties.LID_Lvl",
+    path: "Properties.level",
     kind: "int",
     tile: "/gi/Gold_Medal.webp",
     min: 1,
     max: 100000,
-    hint: "Player level — drives which rooms and orders unlock.",
-    warning: "Level gates content server-side; far-above-progress levels can lock orders.",
+    hint: "The Level the profile panel draws — the field the game reads. Created on write if the save has none.",
+    warning: "Playrix scores progress server-side; keep jumps modest or the account can be flagged.",
   },
   {
     key: "lives",

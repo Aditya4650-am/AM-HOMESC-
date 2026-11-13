@@ -153,6 +153,17 @@ export interface CloneContentResponse {
   warningsTotal: number;
   errors: string[];
   errorsTotal: number;
+  /**
+   * Present only when the request opted in (`progression: true`): the donor's
+   * level / stars / coins leaves that actually landed, the ones the engine
+   * refused, and any clamp/jump notes. A content clone — the default — has no
+   * progression copy at all.
+   */
+  progression?: {
+    copied: Array<{ path: string; from: number | null; to: number }>;
+    dropped: string[];
+    notes: string[];
+  };
   overview?: OverviewPayload;
 }
 
@@ -429,8 +440,13 @@ export const api = {
    * `path` is deliberately not sent by the UI: the source is the tool's own
    * `data/IGG-account.db` and the server resolves it itself.
    */
-  cloneContent: (payload: { serial: string; path?: string; roots?: string[] }) =>
-    post<CloneContentResponse>("/api/clone-content", payload),
+  cloneContent: (payload: {
+    serial: string;
+    path?: string;
+    roots?: string[];
+    /** Opt-in: also copy the donor's level / stars / coins (off by default). */
+    progression?: boolean;
+  }) => post<CloneContentResponse>("/api/clone-content", payload),
 
   /** Reports the built-in clone source (path + whether the file is present). */
   cloneSource: () => request<CloneSourceResponse>("/api/clone/source"),

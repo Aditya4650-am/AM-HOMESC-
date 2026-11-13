@@ -68,6 +68,7 @@ import {
   CONTENT_ROOTS,
   assertContentRoots,
 } from "./cloneGuard.ts";
+import { progressionCopy } from "./cloneProgress.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -755,6 +756,11 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       roots?: string[];
       /** Device save bytes, pulled by the local proxy — see below. */
       pulled?: string;
+      /**
+       * Opt-in: also copy the donor's level / stars / coins onto the target.
+       * OFF by default — a content clone carries the house and nothing else.
+       */
+      progression?: boolean;
     }>(req);
     if (!body.serial) {
       throw new SessionError("`serial` is required", 400);
@@ -963,11 +969,36 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
       perRoot.push({ root, fields, mode: spliced > 0 ? "splice" : "leaves", skipped });
     }
+    const contentFields = ops.length;
     if (ops.length === 0) {
       throw new SessionError("no content fields found on the built-in account", 400);
     }
     // Shallow paths first so a parent splice lands before anything nested.
     ops.sort((a, b) => (a.path.match(/\./g)?.length ?? 0) - (b.path.match(/\./g)?.length ?? 0));
+
+    /* ------------------------------------------- opt-in progression copy --
+     * OFF by default: a content clone carries the donor's house and NOTHING
+     * else, which is the build measured clean in game. Only when the operator
+     * ticks "also copy level / stars / coins" do the donor's five progression
+     * leaves join the SAME batch — so they land under the same
+     * `refreshIntegrity` pass as everything else, which is the whole ban
+     * guard: the game re-derives `Properties.CeReas_R1` (coins) and
+     * `Properties.CeReas_R4` (star balance) from live state and fires
+     * `SecretValueValidationFailedEvent` when they disagree.
+     *
+     * The bounds (coins clamped under 2e9, level jumps over +200 called out,
+     * identity/statistics/secret roots never touched) live in
+     * `cloneProgress.ts`. `assertContentRoots` is untouched: a progression
+     * ROOT can still never be requested — only these five named leaves.
+     */
+    const progression: Array<{ path: string; from: number | null; to: number }> = [];
+    const progressionNotes: string[] = [];
+    if (body.progression === true) {
+      const copy = progressionCopy(donorSave, targetSave);
+      ops.push(...copy.ops);
+      progression.push(...copy.copied);
+      progressionNotes.push(...copy.notes);
+    }
 
     // `runApply` discards the WHOLE batch on the first refusal, so a single
     // incompatible splice would cost the entire clone. Retry by dropping only
@@ -1001,6 +1032,12 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     }
     for (const r of perRoot) r.fields = appliedByRoot.get(r.root) ?? 0;
 
+    // Which of the opt-in progression leaves survived the apply (the retry
+    // loop above drops refusals one at a time, so "requested" != "landed").
+    const landed = new Set(ops.map((o) => o.path));
+    const progressionLanded = progression.filter((p) => landed.has(p.path));
+    const progressionDropped = progression.filter((p) => !landed.has(p.path));
+
     // Only now — the clone actually landed — does this pulled save become the
     // session every read and Push targets. On the refusal path above the active
     // pointer is untouched, so the UI keeps operating on the session it holds.
@@ -1011,7 +1048,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       source: srcPath,
       serial: body.serial,
       roots: perRoot,
-      fields: ops.length,
+      fields: contentFields,
       pushed,
       dropped: droppedPaths.length,
       droppedPaths: droppedPaths.slice(0, 40),
@@ -1020,6 +1057,15 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       warningsTotal: result.warnings.length,
       errors: result.errors.slice(0, 40),
       errorsTotal: result.errors.length,
+      // Opt-in level/stars/coins copy: what was requested, what actually
+      // landed, and the clamps/jump notes — reported, never silent.
+      progression: result.ok
+        ? {
+            copied: progressionLanded,
+            dropped: progressionDropped.map((p) => p.path),
+            notes: progressionNotes,
+          }
+        : undefined,
       overview: result.ok ? target.overview() : undefined,
     });
     return;

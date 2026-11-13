@@ -421,7 +421,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         try {
           const [n, l] = await Promise.all([
             api.field("Properties.name").catch(() => null),
-            api.field("Properties.LID_Lvl").catch(() => api.field("Properties.level")).catch(() => null),
+            api.field("Properties.level").catch(() => api.field("Properties.LID_Lvl")).catch(() => null),
           ]);
           const nm = typeof n?.value === "string" && n.value ? n.value : "";
           const lv = typeof l?.value === "number" ? l.value : null;
@@ -439,7 +439,7 @@ export function StudioProvider({ children }: { children: ReactNode }) {
         try {
           const [n, l] = await Promise.all([
             api.field("Properties.name").catch(() => null),
-            api.field("Properties.LID_Lvl").catch(() => api.field("Properties.level")).catch(() => null),
+            api.field("Properties.level").catch(() => api.field("Properties.LID_Lvl")).catch(() => null),
           ]);
           const nm = typeof n?.value === "string" && n.value ? n.value : "";
           const lv = typeof l?.value === "number" ? l.value : null;

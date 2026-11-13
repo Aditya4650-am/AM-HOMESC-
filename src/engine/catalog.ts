@@ -50,21 +50,33 @@ export const CATALOG: readonly CatalogGroup[] = [
         warning: "Mirrored into Properties.CeReas_R1 as `C=`.",
       },
       {
-        path: "Properties.LID_Lvl",
+        path: "Properties.level",
         label: "Level",
         hint:
-          "Match-3 (minigame) level stored in the local save. The profile " +
-          "level the client displays and the leaderboard report is tracked " +
-          "server-side by Playrix, so a save edit alone does not change it " +
-          "(verified live: LID_Lvl=32 kept after the game re-saved while the " +
-          "client and leaderboard still reported level 1).",
+          "The Level the profile panel draws — this is the field the game reads. " +
+          "A fresh save often has NO `Properties.level` at all (measured on the live " +
+          "device: LID_Lvl=34, `Properties.level` absent, profile showing Level 1), " +
+          "so it is created on write. `Properties.LID_Lvl` is a different field and " +
+          "does not drive the display.",
         control: "int",
         min: 1,
         max: 100000,
         warning:
-          "Server-authoritative for display: expect the game to keep showing " +
-          "its server-computed level after this write. Large jumps also make " +
-          "later orders impossible to complete.",
+          "Playrix scores progress server-side against this account's own history " +
+          "(`AntiCheat.Server.ScoreValidation`), so keep jumps modest. Large jumps " +
+          "also make later orders impossible to complete.",
+      },
+      {
+        path: "Properties.LID_Lvl",
+        label: "Match-3 level (LID_Lvl)",
+        hint:
+          "The match-3 level id kept in the local save. NOT the profile Level — " +
+          "editing it alone leaves the profile at 1. Kept as its own field so the " +
+          "two never drift by accident.",
+        control: "int",
+        min: 1,
+        max: 100000,
+        warning: "Server-authoritative: expect the game to keep its own value here.",
       },
       {
         path: "Properties.earnedStars",

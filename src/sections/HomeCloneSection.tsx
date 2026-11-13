@@ -22,7 +22,11 @@ import { api, type CloneSourceResponse, type SeasonPassUnlockResponse } from "..
  *
  * What deliberately does NOT travel is **progress**: level, stars, coins,
  * statistics, quests, events and the account's secret values stay the
- * connected client's own. That split is the entire ban guard — the 9.2.101 APK
+ * connected client's own — unless the operator ticks the optional
+ * "also copy level, stars and coins" box, which asks the server for the same
+ * bounded, mirror-refreshed five leaves (level, match-3 level, coins, earned
+ * and spent stars) and reports every value before → after. That split is the
+ * entire ban guard — the 9.2.101 APK
  * shows Playrix scores an account's progress server-side against its own
  * history (`AntiCheat.Server.ScoreValidation`), and every full-save transplant
  * measured on 2026-10-17 was answered with the "suspicious activity" warning,
@@ -39,6 +43,14 @@ export function HomeCloneSection() {
   const [sourceErr, setSourceErr] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [last, setLast] = useState<string | null>(null);
+  /**
+   * Opt-in progression copy. OFF by default: the clone carries the donor's
+   * house and nothing else, which is the build measured clean in game. Ticked
+   * by the operator, the server additionally writes the donor's level, stars
+   * and coins — bounded (coins clamped, big level jumps warned) and reported
+   * back as before → after.
+   */
+  const [withProgress, setWithProgress] = useState(false);
 
   const [spRunning, setSpRunning] = useState(false);
   const [spResult, setSpResult] = useState<SeasonPassUnlockResponse | null>(null);
@@ -75,8 +87,9 @@ export function HomeCloneSection() {
     setLast(null);
     try {
       // No path: the server reads its own data/IGG-account.db, so what lands on
-      // this device is always that one account.
-      const res = await api.cloneContent({ serial });
+      // this device is always that one account. `progression` is only ever sent
+      // when the operator ticked the box — the default clone stays content-only.
+      const res = await api.cloneContent({ serial, progression: withProgress });
       if (!res.ok) {
         pushLog("err", "Clone failed", res.errors.slice(0, 4).join(" · ") || "unknown error");
         toast.err("Clone failed", res.errors[0] ?? "unknown error");
@@ -84,22 +97,45 @@ export function HomeCloneSection() {
         return;
       }
       const roots = res.roots.filter((r) => r.fields > 0);
+      const prog = res.progression;
       pushLog(
         "ok",
         "IGG account cloned",
         `${res.fields} content fields · ${roots.length} roots · ` +
-          `${res.warningsTotal} warnings · your level/coins/statistics untouched`,
+          `${res.warningsTotal} warnings` +
+          (prog && prog.copied.length
+            ? ` · progression: ${prog.copied.length} fields copied`
+            : " · your level/coins/statistics untouched"),
       );
       if (res.warningsTotal > 0) {
         pushLog("warn", `${res.warningsTotal} warnings`, res.warnings.slice(0, 4).join(" · "));
       }
-      setLast(`${res.fields} fields · ${roots.length} roots staged`);
+      if (prog) {
+        for (const n of prog.notes) pushLog("warn", "Progression note", n);
+        for (const p of prog.copied) {
+          pushLog(
+            "warn",
+            `Copied ${p.path}`,
+            `${p.from === null ? "absent" : p.from} → ${p.to}`,
+          );
+        }
+        for (const d of prog.dropped) pushLog("warn", "Progression not copied", d);
+      }
+      setLast(
+        prog && prog.copied.length
+          ? `${res.fields} fields · ${roots.length} roots · ${prog.copied.length} progression`
+          : `${res.fields} fields · ${roots.length} roots staged`,
+      );
       // The clone route pulls straight off this device, so the active session is
       // device-sourced — mark it so Push is allowed to write it back.
       setDeviceSerial(serial);
       toast.ok(
-        "IGG home cloned — your progress untouched",
-        "Press Push to write the save and open the game.",
+        prog && prog.copied.length
+          ? "IGG account cloned + level/stars/coins copied"
+          : "IGG home cloned — your progress untouched",
+        prog && prog.copied.length
+          ? prog.copied.map((p) => `${p.path.split(".")[1]} ${p.from ?? "—"} → ${p.to}`).join(" · ")
+          : "Press Push to write the save and open the game.",
       );
       await reload();
     } catch (err: unknown) {
@@ -178,8 +214,9 @@ export function HomeCloneSection() {
       <div className="am-hint" style={{ margin: "8px 0 14px", lineHeight: 1.6 }}>
         Put the <b>IGG account's</b> whole home onto the client you have connected — every room
         built with its furniture, the garden, the decorations, characters, avatars, costumes and
-        photo albums. Your own level, coins, stars and statistics stay exactly as they are.
-        Nothing is written until you press <b>Push</b>, and every push backs your save up first.
+        photo albums. Your own level, coins, stars and statistics stay exactly as they are (unless
+        you tick the optional copy below). Nothing is written until you press <b>Push</b>, and every
+        push backs your save up first.
       </div>
 
       <div className="am-label">Source account</div>
@@ -211,8 +248,30 @@ export function HomeCloneSection() {
         costumes, minigames, match-3 state and photo albums.
         <br />
         <b>Left yours</b> — level, stars, coins, lives, statistics, quests, events, season passes,
-        player items and the save's secret values.
+        player items and the save's secret values — unless you tick the box below.
       </div>
+
+      <label
+        className="am-hint"
+        style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "12px 0 0", cursor: "pointer" }}
+      >
+        <input
+          type="checkbox"
+          checked={withProgress}
+          onChange={(e) => setWithProgress(e.target.checked)}
+          style={{ marginTop: 3 }}
+        />
+        <span style={{ lineHeight: 1.6 }}>
+          <b>Also copy level, stars and coins</b> from the IGG account (off by default).
+          <br />
+          The clone normally keeps your own progress. Ticking this additionally writes the donor's{" "}
+          <code>level</code>, match-3 level, <code>coins</code> and star balance onto your account —
+          coins are clamped below 2,000,000,000 and a level jump over 200 is warned, because
+          Playrix scores progress server-side against <i>this</i> account's own history. Every value
+          copied is reported before → after. Your identity, statistics and secret values are still
+          never touched.
+        </span>
+      </label>
 
       <div className="am-row" style={{ margin: "16px 0" }}>
         <button

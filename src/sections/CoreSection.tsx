@@ -57,7 +57,7 @@ function DataPanel({ group }: { group: { fields: CatalogField[] } }) {
   const field = (path: string) => group.fields.find((f) => f.path === path);
 
   const coinsF = field("Properties.coins");
-  const levelF = field("Properties.LID_Lvl");
+  const levelF = field("Properties.level");
   const earnedF = field("Properties.earnedStars");
   const spentF = field("Properties.spentStars");
 
@@ -74,7 +74,7 @@ function DataPanel({ group }: { group: { fields: CatalogField[] } }) {
           emoji="🏆"
           icon={GI.level}
           label="Level"
-          value={num("Properties.LID_Lvl")?.toLocaleString("en-US") ?? "—"}
+          value={num("Properties.level")?.toLocaleString("en-US") ?? "1"}
         />
         <KpiTile
           emoji="🪙"
@@ -176,7 +176,7 @@ function DataPanel({ group }: { group: { fields: CatalogField[] } }) {
       </div>
 
       {/* Other curated fields in this group (text / unsupported controls) */}
-      {group.fields.filter((f) => !["Properties.coins", "Properties.LID_Lvl", "Properties.earnedStars", "Properties.spentStars"].includes(f.path))
+      {group.fields.filter((f) => !["Properties.coins", "Properties.level", "Properties.earnedStars", "Properties.spentStars"].includes(f.path))
         .length > 0 ? (
         <Panel title="More fields" description="Additional fields in this save.">
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -185,7 +185,7 @@ function DataPanel({ group }: { group: { fields: CatalogField[] } }) {
                 (f) =>
                   ![
                     "Properties.coins",
-                    "Properties.LID_Lvl",
+                    "Properties.level",
                     "Properties.earnedStars",
                     "Properties.spentStars",
                   ].includes(f.path),
