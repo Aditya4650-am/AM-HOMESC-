@@ -211,14 +211,6 @@ export function HomeCloneSection() {
     <section className="am-panel">
       <Head title="IGG Account Clone" />
 
-      <div className="am-hint" style={{ margin: "8px 0 14px", lineHeight: 1.6 }}>
-        Put the <b>IGG account's</b> whole home onto the client you have connected — every room
-        built with its furniture, the garden, the decorations, characters, avatars, costumes and
-        photo albums. Your own level, coins, stars and statistics stay exactly as they are (unless
-        you tick the optional copy below). Nothing is written until you press <b>Push</b>, and every
-        push backs your save up first.
-      </div>
-
       <div className="am-label">Source account</div>
       {sourceErr ? (
         <div className="am-hint" style={{ margin: "6px 0" }}>
@@ -239,38 +231,16 @@ export function HomeCloneSection() {
         </div>
       )}
 
-      <div className="am-label" style={{ marginTop: 14 }}>
-        What lands on your device
-      </div>
-      <div className="am-hint" style={{ margin: "6px 0 0", lineHeight: 1.6 }}>
-        <b>Copied</b> — every room and its repairs, every room design the IGG account owns, the
-        furniture design chosen in each room, the garden and its decorations, characters, avatars,
-        costumes, minigames, match-3 state and photo albums.
-        <br />
-        <b>Left yours</b> — level, stars, coins, lives, statistics, quests, events, season passes,
-        player items and the save's secret values — unless you tick the box below.
-      </div>
-
       <label
         className="am-hint"
-        style={{ display: "flex", gap: 8, alignItems: "flex-start", margin: "12px 0 0", cursor: "pointer" }}
+        style={{ display: "flex", gap: 8, alignItems: "center", margin: "14px 0 0", cursor: "pointer" }}
       >
         <input
           type="checkbox"
           checked={withProgress}
           onChange={(e) => setWithProgress(e.target.checked)}
-          style={{ marginTop: 3 }}
         />
-        <span style={{ lineHeight: 1.6 }}>
-          <b>Also copy level, stars and coins</b> from the IGG account (off by default).
-          <br />
-          The clone normally keeps your own progress. Ticking this additionally writes the donor's{" "}
-          <code>level</code>, match-3 level, <code>coins</code> and star balance onto your account —
-          coins are clamped below 2,000,000,000 and a level jump over 200 is warned, because
-          Playrix scores progress server-side against <i>this</i> account's own history. Every value
-          copied is reported before → after. Your identity, statistics and secret values are still
-          never touched.
-        </span>
+        <span>Also copy level, stars and coins</span>
       </label>
 
       <div className="am-row" style={{ margin: "16px 0" }}>
@@ -293,12 +263,6 @@ export function HomeCloneSection() {
 
       <div className="am-label" style={{ marginTop: 8 }}>
         Golden Pass
-      </div>
-      <div className="am-hint" style={{ margin: "6px 0 0", lineHeight: 1.6 }}>
-        Writes the free-row progress and pushes it. The game deletes the tier currency on its next
-        sync, so the pass does not stay unlocked — the button reports exactly what it found
-        instead of claiming an unlock. The gold row is refused outright; it is a real-money
-        purchase.
       </div>
 
       <div className="am-row" style={{ margin: "16px 0" }}>
