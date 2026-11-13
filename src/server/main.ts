@@ -343,6 +343,31 @@ async function callBridge(args: string[], timeoutMs = 180_000): Promise<any> {
   }
 }
 
+/**
+ * A bridge refusal about adb, reworded for a server that has none.
+ *
+ * The hosted checkout has no `client/adb/` — it is gitignored and fetched only
+ * at EXE build time — so `_find_adb()` returns null there and the bridge answers
+ * "adb not found - connect an emulator first". That advice cannot be followed
+ * from a browser, and it is what every EXE older than the release that owns
+ * these routes locally still sees, because those builds forward them here.
+ * Pointing at the desktop app is the only instruction that actually helps.
+ */
+function deviceRefusal(
+  reply: { error?: unknown } | null | undefined,
+  fallback: string,
+  feature = "Fresh Start",
+): string {
+  const raw = String(reply?.error ?? fallback);
+  if (hosted() && /adb not found/i.test(raw)) {
+    return (
+      `${feature} must run on your own PC — this server cannot reach your emulator. ` +
+      "Open HOMESC.SAVE.STUDIO.exe and retry there (let it finish updating first if it just launched)."
+    );
+  }
+  return raw;
+}
+
 // ------------------------------------------------------------- static files --
 
 async function serveStatic(res: ServerResponse, urlPath: string): Promise<boolean> {
@@ -716,11 +741,20 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
    * The source is the built-in IGG account (`data/IGG-account.db`). `path` is
    * accepted but ignored unless it is omitted — it stays optional only so an
    * offline proof can point at a fixture file; the shipped UI never sends it.
+   *
+   * The TARGET half is the connected device, and that half needs adb. adb is
+   * shipped inside the desktop EXE (`client/adb/`, gitignored — fetched only
+   * at build time), never on a hosted checkout, so `callBridge` there answers
+   * "adb not found". The local proxy therefore pulls the save itself and hands
+   * the bytes over as `pulled`; this route only falls back to the bridge when
+   * nobody sent them (a local run, or an offline proof).
    */
   if (route === "POST /api/clone-content") {
     const body = await readJson<{
       serial: string;
       roots?: string[];
+      /** Device save bytes, pulled by the local proxy — see below. */
+      pulled?: string;
     }>(req);
     if (!body.serial) {
       throw new SessionError("`serial` is required", 400);
@@ -751,17 +785,38 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
 
     const source = createSession("content-source", srcBytes, owner, { active: false });
 
-    const reply = await callBridge(["pull", "--serial", body.serial]);
-    if (!(reply.ok && reply.b64)) {
-      sendJson(res, 400, reply);
-      return;
+    /*
+     * Target bytes. The desktop proxy owns adb (the bundle ships it; this
+     * checkout has none), so it pulls the save itself and sends the bytes as
+     * `pulled`. Only a caller that sent none — a local run, an offline proof
+     * — falls back to the bridge, and a bridge refusal about adb is reworded
+     * for a server that cannot reach anyone's emulator.
+     */
+    let targetBytes: Uint8Array;
+    if (typeof body.pulled === "string" && body.pulled) {
+      targetBytes = b64ToBytes(body.pulled);
+      if (!targetBytes.length) throw new SessionError("`pulled` is empty", 400);
+    } else {
+      const reply = await callBridge(["pull", "--serial", body.serial]);
+      if (!(reply.ok && reply.b64)) {
+        sendJson(res, 400, {
+          ...reply,
+          error: deviceRefusal(
+            reply,
+            `Could not read the save from ${body.serial} — connect an emulator first`,
+            "Cloning",
+          ),
+        });
+        return;
+      }
+      targetBytes = b64ToBytes(reply.b64);
     }
     // The pulled client save becomes the edit target ONLY if the clone lands.
     // Creating it active up-front meant a failed apply (below) left the active
     // pointer swapped while the UI still wrote to the previous session — a
     // split-brain where Push exported stale pre-clone bytes. Keep it passive
     // and flip the pointer on success.
-    const target = createSession(`device:${body.serial}`, b64ToBytes(reply.b64), owner, { active: false });
+    const target = createSession(`device:${body.serial}`, targetBytes, owner, { active: false });
 
     const ops: EditOp[] = [];
     const perRoot: Array<{ root: string; fields: number; mode: string; skipped: number }> = [];
@@ -1347,7 +1402,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const reply = await callBridge(["fresh-start-new-account", "--serial", serial], 300_000);
     if (!reply?.ok) {
       throw new SessionError(
-        String(reply?.error ?? "Unable to complete the operation. Restore the previous account."),
+        deviceRefusal(reply, "Unable to complete the operation. Restore the previous account."),
         400,
       );
     }
@@ -1368,7 +1423,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
     const reply = await callBridge(["fresh-start-restore-account", "--serial", serial], 300_000);
     if (!reply?.ok) {
       throw new SessionError(
-        String(reply?.error ?? "Unable to restore the previous account."),
+        deviceRefusal(reply, "Unable to restore the previous account."),
         400,
       );
     }
@@ -1404,7 +1459,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       sendJson(res, 200, { ok: true, file: reply.file, package: reply.package, overview: session.overview() });
       return;
     }
-    sendJson(res, 400, reply);
+    sendJson(res, 400, {
+      ...reply,
+      error: deviceRefusal(reply, String(reply?.error ?? "Could not read the save"), "Connect"),
+    });
     return;
   }
 
@@ -1417,7 +1475,10 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL): P
       if (body.restart === false) args.push("--no-restart");
       return callBridge(args);
     });
-    sendJson(res, reply.ok ? 200 : 400, reply);
+    sendJson(res, reply.ok ? 200 : 400, {
+      ...reply,
+      ...(reply.ok ? {} : { error: deviceRefusal(reply, String(reply?.error ?? "Push failed"), "Push") }),
+    });
     return;
   }
 

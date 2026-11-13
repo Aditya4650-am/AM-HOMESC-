@@ -2256,6 +2256,52 @@ def _make_proxy_handler(client: "HomescapesClient", upstream_base: str) -> type[
                 self._respond_json(200, {"ok": True, **reply})
                 return
 
+            # IGG Account Clone is a LIVE device flow: the transplant runs on
+            # the studio server (it owns the donor account and the save
+            # engine), but the device half needs adb — and adb ships inside
+            # THIS bundle, never on the hosted checkout, where the same request
+            # used to land and die with "adb not found - connect an emulator
+            # first". So the pull happens here and the bytes are handed over;
+            # same rule as pull/push: local device, remote save logic. The
+            # reply comes back untouched, and it carries the staged session, so
+            # the later Push exports exactly these bytes.
+            if self.command == "POST" and path == "/api/clone-content":
+                try:
+                    payload = json.loads(self._body().decode() or "{}")
+                except Exception:
+                    payload = {}
+                serial = str(payload.get("serial") or "")
+                if not serial:
+                    self._respond_json(400, {"ok": False, "error": "Select a device to continue"})
+                    return
+                try:
+                    pulled = client.pull(serial)
+                except ClientError as exc:
+                    msg = str(exc)
+                    self._respond_json(400, {"ok": False, "error": msg, "errors": [msg]})
+                    return
+                except Exception as exc:  # never leave the fetch hanging
+                    msg = f"{type(exc).__name__}: {exc}"
+                    self._respond_json(400, {"ok": False, "error": msg, "errors": [msg]})
+                    return
+                b64 = str(pulled.get("b64") or "")
+                if not (pulled.get("ok") and b64):
+                    msg = str(pulled.get("error") or "could not read the device save")
+                    self._respond_json(400, {"ok": False, "error": msg, "errors": [msg]})
+                    return
+                payload["pulled"] = b64
+                status, _headers, data = self._upstream(
+                    "POST", path, json.dumps(payload).encode(), token
+                )
+                try:
+                    self._respond_json(status, json.loads(data.decode() or "{}"))
+                except Exception:
+                    self._respond_json(
+                        status,
+                        {"ok": False, "error": "studio returned an unreadable reply"},
+                    )
+                return
+
             # Fresh Start is a LIVE device flow — it removes files from the
             # client's own machine — so it runs here, not on the hosted
             # server, which has no adb. Same rule as pull/push: local device,

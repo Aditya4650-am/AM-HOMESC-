@@ -557,20 +557,25 @@ export function StudioProvider({ children }: { children: ReactNode }) {
     setPushing(true);
     try {
       const result = await api.newAccount(serial, overview.meta.id);
-      toast.ok("Game restarted", "Wait for the game to be ready, then press Connect.");
-      pushLog("ok", "Fresh Start completed", result.localBackup);
-      return result;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      toast.err("Fresh Start failed", msg);
-      pushLog("err", "Fresh Start failed", msg);
-      return null;
-    } finally {
+      // The save is gone from the device, so this session describes files that
+      // no longer exist — drop it and let Connect read the new account.
       setOverview(null);
       setValues({});
       setDeviceSerial(null);
       setLastApply(null);
       setPendingMap(new Map());
+      toast.ok("Game restarted", "Wait for the game to be ready, then press Connect.");
+      pushLog("ok", "Fresh Start completed", result.localBackup);
+      return result;
+    } catch (err) {
+      // Nothing was deleted (the bridge refuses before touching a file), so the
+      // connected session is still valid. Clearing it here used to strand the
+      // operator on "Connect a device to continue" after a failed attempt.
+      const msg = err instanceof Error ? err.message : String(err);
+      toast.err("Fresh Start failed", msg);
+      pushLog("err", "Fresh Start failed", msg);
+      return null;
+    } finally {
       setPushing(false);
     }
   }, [overview, serial, deviceSerial, pending, applying, connecting, pushing, toast, pushLog]);
